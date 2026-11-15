@@ -1,13 +1,14 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
+import re
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -150,7 +151,7 @@ async def start_handler(message: Message):
 
 async def status_handler(callback: CallbackQuery):
     membership = await db.get_membership(callback.from_user.id)
-    if membership and membership["expires_at"] > datetime.now(timezone.utc):
+    if membership and (membership["expires_at"] is None or membership["expires_at"] > datetime.now(timezone.utc)):
         remaining = membership["expires_at"] - datetime.now(timezone.utc)
         days = max(0, remaining.days)
         text = (
@@ -168,7 +169,7 @@ async def status_handler(callback: CallbackQuery):
 
 async def refresh_links_handler(callback: CallbackQuery, bot: Bot):
     membership = await db.get_membership(callback.from_user.id)
-    if not membership or membership["expires_at"] <= datetime.now(timezone.utc):
+    if not membership or (membership["expires_at"] is not None and membership["expires_at"] <= datetime.now(timezone.utc)):
         await callback.answer("No active premium membership.", show_alert=True)
         return
     try:
@@ -240,7 +241,7 @@ async def receive_duration(message: Message, state: FSMContext):
         [InlineKeyboardButton(text="✅ Confirm — Extend", callback_data="validate:extend")],
         [InlineKeyboardButton(text="🔄 Confirm — Reset from now", callback_data="validate:reset")],
         [InlineKeyboardButton(text="Cancel", callback_data="validate:cancel")],
-    ] if active and active["expires_at"] > datetime.now(timezone.utc) else [
+    ] if active and (active["expires_at"] is None or active["expires_at"] > datetime.now(timezone.utc)) else [
         [InlineKeyboardButton(text="✅ Confirm Activation", callback_data="validate:reset")],
         [InlineKeyboardButton(text="Cancel", callback_data="validate:cancel")],
     ]
