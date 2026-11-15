@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS memberships (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(telegram_id),
     starts_at TIMESTAMPTZ NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
     status TEXT NOT NULL CHECK (status IN ('active','expired','revoked')),
     validated_by BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -67,6 +67,7 @@ class Database:
         db = cls(pool)
         async with pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute("ALTER TABLE memberships ALTER COLUMN expires_at DROP NOT NULL")
         return db
 
     async def close(self) -> None:
@@ -140,9 +141,9 @@ class Database:
                     """SELECT * FROM memberships WHERE user_id=$1 AND status='active'
                        ORDER BY expires_at DESC LIMIT 1 FOR UPDATE""", user_id
                 )
-                if current and current["expires_at"] > now and not reset:
+                if current and (current["expires_at"] is None or current["expires_at"] > now) and not reset:
                     starts = current["starts_at"]
-                    expiry = current["expires_at"] + timedelta(days=days)
+                    expiry = current["expires_at"] + timedelta(days=days) if current["expires_at"] else None
                     await conn.execute(
                         "UPDATE memberships SET expires_at=$2, validated_by=$3, updated_at=NOW() WHERE id=$1",
                         current["id"], expiry, admin_id
@@ -157,6 +158,33 @@ class Database:
                     await conn.execute(
                         """INSERT INTO memberships(user_id,starts_at,expires_at,status,validated_by)
                            VALUES($1,$2,$3,'active',$4)""", user_id, starts, expiry, admin_id
+                    )
+                return starts, expiry
+
+
+    async def grant_premium(self, user_id: int, duration_seconds: int | None, admin_id: int):
+        """Grant or extend membership; None duration means permanent access."""
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                now = datetime.now(timezone.utc)
+                current = await conn.fetchrow(
+                    """SELECT * FROM memberships WHERE user_id=$1 AND status='active'
+                       ORDER BY expires_at DESC NULLS FIRST LIMIT 1 FOR UPDATE""", user_id
+                )
+                if current and (current["expires_at"] is None or current["expires_at"] > now):
+                    starts = current["starts_at"]
+                    expiry = None if current["expires_at"] is None or duration_seconds is None else current["expires_at"] + timedelta(seconds=duration_seconds)
+                    await conn.execute(
+                        """UPDATE memberships SET expires_at=$2, validated_by=$3, updated_at=NOW() WHERE id=$1""",
+                        current["id"], expiry, admin_id
+                    )
+                else:
+                    starts = now
+                    expiry = now + timedelta(seconds=duration_seconds) if duration_seconds is not None else None
+                    await conn.execute("UPDATE memberships SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active'", user_id)
+                    await conn.execute(
+                        """INSERT INTO memberships(user_id,starts_at,expires_at,status,validated_by) VALUES($1,$2,$3,'active',$4)""",
+                        user_id, starts, expiry, admin_id
                     )
                 return starts, expiry
 
@@ -202,8 +230,8 @@ class Database:
         return await self.pool.fetch(
             """SELECT u.telegram_id,u.username,m.expires_at FROM users u
                JOIN memberships m ON m.user_id=u.telegram_id
-               WHERE m.status='active' AND m.expires_at>NOW()
-               ORDER BY m.expires_at LIMIT $1""", limit
+               WHERE m.status='active' AND (m.expires_at IS NULL OR m.expires_at>NOW())
+               ORDER BY m.expires_at NULLS LAST LIMIT $1""", limit
         )
 
     async def due_memberships(self):
