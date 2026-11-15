@@ -7,7 +7,8 @@ Telegram premium-membership manager using Python, Aiogram 3, PostgreSQL and APSc
 - User registration and membership status.
 - Owner-managed admins from inside the bot; admin assignments are stored in PostgreSQL.
 - Inline admin panel.
-- Manual premium validation with custom duration in days.
+- Manual premium validation with custom duration from 1 minute to unlimited.
+- Admin `/addpremium` command with minute/hour/day/week/month/year or unlimited duration.
 - Multiple channel registration and permission checks.
 - Per-member join-request invite links and identity verification.
 - 48-hour and 24-hour expiry warnings.
@@ -51,11 +52,17 @@ Install requirements.txt, start PostgreSQL, set environment variables, then run 
 ## Admin workflow
 
 - Open the bot and use Admin Panel.
-- Choose Add / Validate Premium, enter the member Telegram numeric ID, then enter validity in days.
+- Choose Add / Validate Premium for the guided flow, or use `/addpremium USER_ID 1 month`. You can also reply to a user's message with `/addpremium 1 month`.
+- Supported examples: `1 minute`, `12 hours`, `7 days`, `1 month` (30 days), `1 year` (365 days), and `unlimited` / `forever` / `permanent`.
+- Timed access has a minimum of 1 minute. Unlimited memberships have no expiry and are not removed by the expiry scheduler.
 - Confirm the displayed activation and expiry details.
 - Use Manage Channels to register private channel IDs.
 - Use Members to inspect status and renew/revoke subscriptions.
 - Use Audit Logs to inspect recent security and membership events.
+
+## Premium duration command
+
+`/addpremium USER_ID DURATION` grants or extends premium immediately. Alternatively, reply to a user message with `/addpremium DURATION`. The user must have started the bot before it can receive a private message. Timed durations accept minute, hour, day, week, month (30 days), and year (365 days). Use `unlimited` for permanent access.
 
 ## Important Telegram behavior
 
