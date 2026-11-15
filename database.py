@@ -182,6 +182,11 @@ class Database:
                JOIN memberships m ON m.user_id=ca.user_id
                WHERE m.status='expired' AND m.expires_at<=NOW()
                  AND ca.status <> 'removed'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM memberships active
+                   WHERE active.user_id=ca.user_id AND active.status='active'
+                     AND active.expires_at>NOW()
+                 )
                ORDER BY m.expires_at"""
         )
 
@@ -190,7 +195,6 @@ class Database:
             """SELECT m.*,u.username FROM memberships m JOIN users u ON u.telegram_id=m.user_id
                WHERE m.status='active' AND m.expires_at>NOW()
                AND m.expires_at<=NOW()+($1 * INTERVAL '1 hour')
-               AND m.expires_at>NOW()+(GREATEST($1-1,0) * INTERVAL '1 hour')
                AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.event='WARNING_SENT'
                  AND a.target_id=m.user_id AND (a.details->>'hours')::int=$1
                  AND (a.details->>'membership_id')::bigint=m.id)""", hours
