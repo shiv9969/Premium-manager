@@ -5,7 +5,7 @@ Telegram premium-membership manager using Python, Aiogram 3, PostgreSQL and APSc
 ## Features
 
 - User registration and membership status.
-- Multiple authorized admins, configured by numeric Telegram IDs.
+- Owner-managed admins from inside the bot; admin assignments are stored in PostgreSQL.
 - Inline admin panel.
 - Manual premium validation with custom duration in days.
 - Multiple channel registration and permission checks.
@@ -40,7 +40,7 @@ Each audit record includes an IST timestamp, actor ID where applicable, target u
 ## Run with Docker
 
 1. Copy .env.example to .env.
-2. Set BOT_TOKEN, OWNER_IDS, and a strong POSTGRES_PASSWORD.
+2. Set BOT_TOKEN, OWNER_IDS (the bootstrap owner Telegram ID), and a strong POSTGRES_PASSWORD. Admins are assigned later from the bot's Owner → Manage Admins panel; no ADMIN_IDS list is needed.
 3. Start: docker compose up -d --build
 4. Inspect logs: docker compose logs -f bot
 
@@ -68,7 +68,7 @@ Install requirements.txt, start PostgreSQL, set environment variables, then run 
 ## Security
 
 - Never commit .env or share the bot token.
-- Configure owner/admin IDs as numeric Telegram IDs, not usernames.
+- Configure only the bootstrap owner in OWNER_IDS as a numeric Telegram ID. The owner can assign/remove admins inside the bot; those assignments persist in PostgreSQL.
 - Use a strong PostgreSQL password and restrict database network access.
 - Back up PostgreSQL regularly.
 - Use minimum required bot permissions.
@@ -76,3 +76,10 @@ Install requirements.txt, start PostgreSQL, set environment variables, then run 
 ## Scope
 
 Manual activation only; no payment gateway or web dashboard. Test in private test channels before production use.
+
+
+## Persistence and redeployment
+
+All users, admin assignments, membership start/expiry timestamps, invite access records, channel configuration and audit logs live in PostgreSQL. Restarting the bot or redeploying it to another host does not reset these timestamps, provided the new deployment connects to the same persistent PostgreSQL database using the same DATABASE_URL. The Docker Compose database volume is persistent on the same host; for a move to another host, migrate/restore the PostgreSQL database and configure the new deployment with that database URL. Do not delete the database volume when redeploying. The reconciliation scheduler runs on startup and every 10 minutes to process overdue reminders and expired access after downtime.
+
+OWNER_IDS is the bootstrap/root owner setting and remains in deployment environment variables for security. It is not duplicated as an ADMIN_IDS list; ordinary admin assignments are stored in the database and managed in the bot.
