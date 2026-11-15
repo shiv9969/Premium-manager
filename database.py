@@ -1,6 +1,6 @@
 import json
 import asyncpg
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
@@ -105,14 +105,14 @@ class Database:
                 )
                 if current and current["expires_at"] > now and not reset:
                     starts = current["starts_at"]
-                    expiry = current["expires_at"] + __import__("datetime").timedelta(days=days)
+                    expiry = current["expires_at"] + timedelta(days=days)
                     await conn.execute(
                         "UPDATE memberships SET expires_at=$2, validated_by=$3, updated_at=NOW() WHERE id=$1",
                         current["id"], expiry, admin_id
                     )
                 else:
                     starts = now
-                    expiry = now + __import__("datetime").timedelta(days=days)
+                    expiry = now + timedelta(days=days)
                     await conn.execute(
                         "UPDATE memberships SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active'",
                         user_id
@@ -173,6 +173,16 @@ class Database:
         return await self.pool.fetch(
             """SELECT m.*,u.username FROM memberships m JOIN users u ON u.telegram_id=m.user_id
                WHERE m.status='active' AND m.expires_at<=NOW()"""
+        )
+
+    async def expired_access(self):
+        return await self.pool.fetch(
+            """SELECT ca.user_id,ca.chat_id,ca.invite_link,ca.status,m.id AS membership_id
+               FROM channel_access ca
+               JOIN memberships m ON m.user_id=ca.user_id
+               WHERE m.status='expired' AND m.expires_at<=NOW()
+                 AND ca.status <> 'removed'
+               ORDER BY m.expires_at"""
         )
 
     async def warning_candidates(self, hours: int):
