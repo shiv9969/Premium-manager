@@ -31,12 +31,14 @@ log = logging.getLogger("premium_manager")
 IST = ZoneInfo(settings.timezone)
 db: Database
 scheduler: AsyncIOScheduler | None = None
+authorized_admin_ids: set[int] = set()
 
 
 class AdminFlow(StatesGroup):
     member_id = State()
     duration = State()
     channel_id = State()
+    admin_id = State()
 
 
 def fmt_time(value: datetime) -> str:
@@ -53,14 +55,17 @@ def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
+    rows = [
         [InlineKeyboardButton(text="➕ Add / Validate Premium", callback_data="admin:add")],
         [InlineKeyboardButton(text="👥 Active Members", callback_data="admin:members"),
          InlineKeyboardButton(text="📜 Audit Logs", callback_data="admin:logs")],
         [InlineKeyboardButton(text="📢 Manage Channels", callback_data="admin:channels")],
-        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu:home")],
-    ])
+    ]
+    if is_owner:
+        rows.append([InlineKeyboardButton(text="🛡 Manage Admins", callback_data="owner:admins")])
+    rows.append([InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def audit(event: str, actor: int | None = None, target: int | None = None, **details):
@@ -74,7 +79,11 @@ async def audit(event: str, actor: int | None = None, target: int | None = None,
 
 
 def is_admin(user_id: int) -> bool:
-    return user_id in settings.admin_ids
+    return user_id in authorized_admin_ids or user_id in settings.owner_ids
+
+
+def is_owner(user_id: int) -> bool:
+    return user_id in settings.owner_ids
 
 
 async def require_admin(callback: CallbackQuery) -> bool:
@@ -177,7 +186,7 @@ async def admin_home(callback: CallbackQuery):
     if not await require_admin(callback):
         return
     await callback.message.edit_text(
-        "🛠 <b>Premium Manager Admin Panel</b>", reply_markup=admin_keyboard()
+        "🛠 <b>Premium Manager Admin Panel</b>", reply_markup=admin_keyboard(is_owner(callback.from_user.id))
     )
     await callback.answer()
 
@@ -297,7 +306,7 @@ async def members_handler(callback: CallbackQuery):
             for r in rows
         ]
         text = "<b>Active members</b>\n" + "\n".join(lines)
-    await callback.message.edit_text(text, reply_markup=admin_keyboard())
+    await callback.message.edit_text(text, reply_markup=admin_keyboard(is_owner(callback.from_user.id)))
     await callback.answer()
 
 
@@ -377,6 +386,69 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
     )
     await state.clear()
     await message.answer(f"✅ Added channel: {chat.title}")
+
+
+
+async def owner_admins_handler(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await audit("OWNER_UNAUTHORIZED", actor=callback.from_user.id, action="manage_admins")
+        await callback.answer("Only the bot owner can manage admins.", show_alert=True)
+        return
+    rows = await db.list_admins()
+    lines = [f"• <code>{r['telegram_id']}</code> — {r['role']}" for r in rows]
+    text = "<b>Admin access</b>\\n" + ("\\n".join(lines) if lines else "No admins assigned.")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Assign Admin", callback_data="owner:add_admin")],
+        [InlineKeyboardButton(text="➖ Remove Admin", callback_data="owner:remove_admin")],
+        [InlineKeyboardButton(text="⬅️ Back", callback_data="admin:home")],
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer()
+
+
+async def owner_begin_admin_change(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("Only the owner can manage admins.", show_alert=True)
+        return
+    action = "add" if callback.data == "owner:add_admin" else "remove"
+    await state.update_data(admin_action=action)
+    await state.set_state(AdminFlow.admin_id)
+    await callback.message.answer("Send the Telegram numeric ID of the admin to " + action + ".")
+    await callback.answer()
+
+
+async def owner_receive_admin_id(message: Message, state: FSMContext):
+    if not is_owner(message.from_user.id):
+        await audit("OWNER_UNAUTHORIZED", actor=message.from_user.id, action="admin_id_input")
+        return
+    try:
+        target_id = int(message.text.strip())
+        if target_id <= 0:
+            raise ValueError
+    except (ValueError, AttributeError):
+        await message.answer("Please send a valid positive Telegram numeric ID.")
+        return
+    data = await state.get_data()
+    action = data.get("admin_action")
+    if action == "add":
+        if target_id in settings.owner_ids:
+            await message.answer("This user is already an owner.")
+        else:
+            await db.add_admin(target_id, message.from_user.id)
+            authorized_admin_ids.add(target_id)
+            await audit("ADMIN_ASSIGNED", actor=message.from_user.id, target=target_id)
+            await message.answer(f"✅ Admin access granted to <code>{target_id}</code>.")
+    elif action == "remove":
+        if target_id in settings.owner_ids:
+            await message.answer("Owner access cannot be removed from the bot. Change OWNER_IDS in deployment settings.")
+        else:
+            removed = await db.remove_admin(target_id)
+            authorized_admin_ids.discard(target_id)
+            await audit("ADMIN_REMOVED", actor=message.from_user.id, target=target_id, removed=removed)
+            await message.answer("✅ Admin access removed." if removed else "That user was not an admin.")
+    else:
+        await message.answer("Admin action expired. Open Manage Admins again.")
+    await state.clear()
 
 
 async def join_request_handler(request: ChatJoinRequest, bot: Bot):
@@ -473,6 +545,9 @@ async def scheduler_tick(bot: Bot):
 async def on_startup(bot: Bot):
     global db, scheduler
     db = await Database.connect(settings.database_url)
+    await db.bootstrap_owners(settings.owner_ids)
+    authorized_admin_ids.clear()
+    authorized_admin_ids.update(await db.admin_ids())
     scheduler = AsyncIOScheduler(timezone=IST)
     scheduler.add_job(
         scheduler_tick, IntervalTrigger(minutes=10), args=[bot],
@@ -510,6 +585,8 @@ async def main():
         Command("help"),
     )
     dp.callback_query.register(admin_home, F.data == "admin:home")
+    dp.callback_query.register(owner_admins_handler, F.data == "owner:admins")
+    dp.callback_query.register(owner_begin_admin_change, F.data.in_({"owner:add_admin", "owner:remove_admin"}))
     dp.callback_query.register(status_handler, F.data == "user:status")
     dp.callback_query.register(refresh_links_handler, F.data == "user:links")
     dp.callback_query.register(
@@ -527,6 +604,7 @@ async def main():
     dp.message.register(receive_member_id, AdminFlow.member_id)
     dp.message.register(receive_duration, AdminFlow.duration)
     dp.message.register(receive_channel_id, AdminFlow.channel_id)
+    dp.message.register(owner_receive_admin_id, AdminFlow.admin_id)
     dp.chat_join_request.register(join_request_handler)
 
     await dp.start_polling(bot)
