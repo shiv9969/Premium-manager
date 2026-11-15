@@ -221,13 +221,16 @@ async def start_handler(message: Message):
 async def status_handler(callback: CallbackQuery):
     membership = await db.get_membership(callback.from_user.id)
     if membership and (membership["expires_at"] is None or membership["expires_at"] > datetime.now(timezone.utc)):
-        remaining = membership["expires_at"] - datetime.now(timezone.utc)
-        days = max(0, remaining.days)
-        text = (
-            f"🟢 <b>Premium Active</b>\n"
-            f"Valid until: {fmt_time(membership['expires_at'])}\n"
-            f"Remaining: {days} day(s)"
-        )
+        if membership["expires_at"] is None:
+            text = "🟢 <b>Premium Active</b>\nValid until: <b>Unlimited</b>"
+        else:
+            remaining = membership["expires_at"] - datetime.now(timezone.utc)
+            days = max(0, remaining.days)
+            text = (
+                f"🟢 <b>Premium Active</b>\n"
+                f"Valid until: {fmt_time(membership['expires_at'])}\n"
+                f"Remaining: {days} day(s)"
+            )
     else:
         text = "⚪ <b>No active premium membership.</b>\nPlease contact an administrator."
     await callback.message.edit_text(
@@ -317,7 +320,7 @@ async def receive_duration(message: Message, state: FSMContext):
     await message.answer(
         f"Confirm premium validation?\n\nUser: <code>{target_id}</code>\n"
         f"Duration: <b>{days} days</b>\n"
-        f"Current expiry: {fmt_time(active['expires_at']) if active else 'Not active'}",
+        f"Current expiry: {(fmt_time(active['expires_at']) if active['expires_at'] else 'Unlimited') if active else 'Not active'}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
     )
 
@@ -340,7 +343,7 @@ async def validate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot
     await audit(
         "USER_VALIDATED", actor=callback.from_user.id, target=target_id,
         duration_days=days, renewal_mode="reset" if reset else "extend",
-        starts_at=starts.isoformat(), expires_at=expiry.isoformat(),
+        starts_at=starts.isoformat(), expires_at=expiry.isoformat() if expiry else None,
     )
     await state.clear()
     try:
@@ -358,7 +361,7 @@ async def validate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot
         return
     await callback.message.edit_text(
         f"✅ User <code>{target_id}</code> validated.\n"
-        f"Duration: {days} days\nExpiry: {fmt_time(expiry)}\n"
+        f"Duration: {days} days\nExpiry: {fmt_time(expiry) if expiry else 'Unlimited'}\n"
         f"Channel links created: {invite_count}"
     )
     await callback.answer("Membership activated.")
@@ -372,7 +375,7 @@ async def members_handler(callback: CallbackQuery):
         text = "No active members found."
     else:
         lines = [
-            f"• <code>{r['telegram_id']}</code> — {fmt_time(r['expires_at'])}"
+            f"• <code>{r['telegram_id']}</code> — {fmt_time(r['expires_at']) if r['expires_at'] else 'Unlimited'}"
             for r in rows
         ]
         text = "<b>Active members</b>\n" + "\n".join(lines)
