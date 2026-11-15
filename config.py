@@ -14,7 +14,6 @@ class Settings:
     bot_token: str
     database_url: str
     owner_ids: set[int]
-    admin_ids: set[int]
     timezone: str
     log_level: str
 
@@ -27,10 +26,9 @@ class Settings:
         if not database_url:
             raise RuntimeError("DATABASE_URL is required")
         owners = _csv_ints(os.getenv("OWNER_IDS", ""))
-        admins = _csv_ints(os.getenv("ADMIN_IDS", ""))
         if not owners:
             raise RuntimeError("Set at least one OWNER_IDS Telegram numeric ID")
-        return cls(token, database_url, owners, admins | owners,
+        return cls(token, database_url, owners,
                    os.getenv("TIMEZONE", "Asia/Kolkata"),
                    os.getenv("LOG_LEVEL", "INFO").upper())
 
