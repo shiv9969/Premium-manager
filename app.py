@@ -28,6 +28,7 @@ logging.basicConfig(
 log = logging.getLogger("premium_manager")
 IST = ZoneInfo(settings.timezone)
 db: Database
+scheduler: AsyncIOScheduler | None = None
 
 
 class AdminFlow(StatesGroup):
@@ -41,7 +42,10 @@ def fmt_time(value: datetime) -> str:
 
 
 def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")]]
+    rows = [
+        [InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")],
+        [InlineKeyboardButton(text="🔗 Get / Refresh Channel Links", callback_data="user:links")],
+    ]
     if is_admin:
         rows.append([InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -81,13 +85,12 @@ async def require_admin(callback: CallbackQuery) -> bool:
     return True
 
 
-async def issue_invites(bot: Bot, user_id: int):
+async def issue_invites(bot: Bot, user_id: int) -> int:
     channels = await db.channels()
     sent = []
     for channel in channels:
         chat_id = channel["chat_id"]
         try:
-            # A join-request link is checked against the requesting Telegram ID.
             await bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
         except TelegramBadRequest:
             pass
@@ -99,9 +102,16 @@ async def issue_invites(bot: Bot, user_id: int):
         await db.save_invite(user_id, chat_id, link.invite_link)
         sent.append(f"• {channel['title']}: {link.invite_link}")
     if sent:
-        await bot.send_message(user_id, "✅ Premium access is ready. Request to join using your personal links:\n\n" + "\n".join(sent))
+        await bot.send_message(
+            user_id,
+            "✅ Premium access is ready. Request to join using your personal links:\n\n"
+            + "\n".join(sent),
+        )
     else:
-        await bot.send_message(user_id, "✅ Premium activated. No premium channels are configured yet; please contact an admin.")
+        await bot.send_message(
+            user_id,
+            "✅ Premium activated. No premium channels are configured yet; please contact an admin.",
+        )
     return len(sent)
 
 
@@ -115,7 +125,7 @@ async def start_handler(message: Message):
         await audit("ADMIN_AUTHORIZED", actor=user.id, action="start")
     await message.answer(
         "Welcome to Premium Membership Manager!\n\n"
-        "Use the button below to check your membership.",
+        "Use the buttons below to check your membership or get your access links.",
         reply_markup=main_keyboard(is_admin(user.id)),
     )
 
@@ -125,19 +135,41 @@ async def status_handler(callback: CallbackQuery):
     if membership and membership["expires_at"] > datetime.now(timezone.utc):
         remaining = membership["expires_at"] - datetime.now(timezone.utc)
         days = max(0, remaining.days)
-        text = (f"🟢 <b>Premium Active</b>\n"
-                f"Valid until: {fmt_time(membership['expires_at'])}\n"
-                f"Remaining: {days} day(s)")
+        text = (
+            f"🟢 <b>Premium Active</b>\n"
+            f"Valid until: {fmt_time(membership['expires_at'])}\n"
+            f"Remaining: {days} day(s)"
+        )
     else:
         text = "⚪ <b>No active premium membership.</b>\nPlease contact an administrator."
-    await callback.message.edit_text(text, reply_markup=main_keyboard(is_admin(callback.from_user.id)))
+    await callback.message.edit_text(
+        text, reply_markup=main_keyboard(is_admin(callback.from_user.id))
+    )
     await callback.answer()
+
+
+async def refresh_links_handler(callback: CallbackQuery, bot: Bot):
+    membership = await db.get_membership(callback.from_user.id)
+    if not membership or membership["expires_at"] <= datetime.now(timezone.utc):
+        await callback.answer("No active premium membership.", show_alert=True)
+        return
+    try:
+        count = await issue_invites(bot, callback.from_user.id)
+        await audit("ACCESS_LINKS_REFRESHED", actor=callback.from_user.id,
+                    target=callback.from_user.id, channel_count=count)
+        await callback.answer("Fresh access links sent.")
+    except (TelegramBadRequest, TelegramForbiddenError) as exc:
+        await audit("ACCESS_DELIVERY_FAILED", target=callback.from_user.id,
+                    error=type(exc).__name__, message=str(exc)[:250])
+        await callback.answer("Could not create links. Please contact an admin.", show_alert=True)
 
 
 async def admin_home(callback: CallbackQuery):
     if not await require_admin(callback):
         return
-    await callback.message.edit_text("🛠 <b>Premium Manager Admin Panel</b>", reply_markup=admin_keyboard())
+    await callback.message.edit_text(
+        "🛠 <b>Premium Manager Admin Panel</b>", reply_markup=admin_keyboard()
+    )
     await callback.answer()
 
 
@@ -153,6 +185,7 @@ async def receive_member_id(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await audit("ADMIN_UNAUTHORIZED", actor=message.from_user.id, action="member_id_input")
         return
+    await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="member_id_input")
     try:
         target_id = int(message.text.strip())
         if target_id <= 0:
@@ -169,10 +202,11 @@ async def receive_member_id(message: Message, state: FSMContext):
     await message.answer("Enter premium validity in days (1–3650).")
 
 
-async def receive_duration(message: Message, state: FSMContext, bot: Bot):
+async def receive_duration(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         await audit("ADMIN_UNAUTHORIZED", actor=message.from_user.id, action="duration_input")
         return
+    await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="duration_input")
     try:
         days = int(message.text.strip())
         if not 1 <= days <= 3650:
@@ -215,17 +249,22 @@ async def validate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot
     target_id, days = int(data["target_id"]), int(data["days"])
     reset = callback.data.endswith("reset")
     starts, expiry = await db.activate(target_id, days, callback.from_user.id, reset)
-    await audit("USER_VALIDATED", actor=callback.from_user.id, target=target_id,
-                duration_days=days, renewal_mode="reset" if reset else "extend",
-                starts_at=starts.isoformat(), expires_at=expiry.isoformat())
+    await audit(
+        "USER_VALIDATED", actor=callback.from_user.id, target=target_id,
+        duration_days=days, renewal_mode="reset" if reset else "extend",
+        starts_at=starts.isoformat(), expires_at=expiry.isoformat(),
+    )
     await state.clear()
     try:
         invite_count = await issue_invites(bot, target_id)
     except (TelegramForbiddenError, TelegramBadRequest) as exc:
-        await audit("ACCESS_DELIVERY_FAILED", actor=callback.from_user.id, target=target_id,
-                    error=type(exc).__name__, message=str(exc)[:300])
+        await audit(
+            "ACCESS_DELIVERY_FAILED", actor=callback.from_user.id, target=target_id,
+            error=type(exc).__name__, message=str(exc)[:300],
+        )
         await callback.message.edit_text(
-            f"✅ Membership saved until {fmt_time(expiry)}, but access delivery failed. Check bot permissions and user chat."
+            f"✅ Membership saved until {fmt_time(expiry)}, but access delivery failed. "
+            "Check bot permissions and whether the user has started the bot."
         )
         await callback.answer("Saved; access delivery needs attention.", show_alert=True)
         return
@@ -244,7 +283,10 @@ async def members_handler(callback: CallbackQuery):
     if not rows:
         text = "No active members found."
     else:
-        lines = [f"• <code>{r['telegram_id']}</code> — {fmt_time(r['expires_at'])}" for r in rows]
+        lines = [
+            f"• <code>{r['telegram_id']}</code> — {fmt_time(r['expires_at'])}"
+            for r in rows
+        ]
         text = "<b>Active members</b>\n" + "\n".join(lines)
     await callback.message.edit_text(text, reply_markup=admin_keyboard())
     await callback.answer()
@@ -261,7 +303,10 @@ async def logs_handler(callback: CallbackQuery):
         for row in rows:
             when = fmt_time(row["created_at"])
             details = str(row["details"])[:110]
-            lines.append(f"• <b>{row['event']}</b> — {when}\n  actor={row['actor_id']} target={row['target_id']} {details}")
+            lines.append(
+                f"• <b>{row['event']}</b> — {when}\n"
+                f"  actor={row['actor_id']} target={row['target_id']} {details}"
+            )
         text = "<b>Recent audit logs</b>\n\n" + "\n\n".join(lines)
     await callback.message.edit_text(text[:4000], reply_markup=admin_keyboard())
     await callback.answer()
@@ -271,12 +316,16 @@ async def channels_handler(callback: CallbackQuery):
     if not await require_admin(callback):
         return
     rows = await db.channels()
-    listing = "\n".join(f"• {r['title']} — <code>{r['chat_id']}</code>" for r in rows) or "No channels configured."
+    listing = "\n".join(
+        f"• {r['title']} — <code>{r['chat_id']}</code>" for r in rows
+    ) or "No channels configured."
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Add Channel", callback_data="channel:add")],
         [InlineKeyboardButton(text="⬅️ Back", callback_data="admin:home")],
     ])
-    await callback.message.edit_text("<b>Premium Channels</b>\n" + listing, reply_markup=keyboard)
+    await callback.message.edit_text(
+        "<b>Premium Channels</b>\n" + listing, reply_markup=keyboard
+    )
     await callback.answer()
 
 
@@ -284,7 +333,9 @@ async def begin_channel_add(callback: CallbackQuery, state: FSMContext):
     if not await require_admin(callback):
         return
     await state.set_state(AdminFlow.channel_id)
-    await callback.message.answer("Send the private channel numeric chat ID (usually starts with -100).")
+    await callback.message.answer(
+        "Send the private channel numeric chat ID (usually starts with -100)."
+    )
     await callback.answer()
 
 
@@ -292,6 +343,7 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
     if not is_admin(message.from_user.id):
         await audit("ADMIN_UNAUTHORIZED", actor=message.from_user.id, action="channel_add_input")
         return
+    await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="channel_add_input")
     try:
         chat_id = int(message.text.strip())
         chat = await bot.get_chat(chat_id)
@@ -299,14 +351,21 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
         member = await bot.get_chat_member(chat_id, me.id)
         if member.status != "administrator":
             raise ValueError("Bot is not an administrator in this channel")
-        if not getattr(member, "can_invite_users", False) or not getattr(member, "can_restrict_members", False):
+        if not getattr(member, "can_invite_users", False) or not getattr(
+            member, "can_restrict_members", False
+        ):
             raise ValueError("Bot needs invite-users and restrict-members permissions")
     except Exception as exc:
-        await message.answer(f"Could not add channel: {str(exc)[:250]}\nCheck the chat ID and bot admin permissions.")
+        await message.answer(
+            f"Could not add channel: {str(exc)[:250]}\n"
+            "Check the chat ID and bot admin permissions."
+        )
         return
     await db.add_channel(chat_id, chat.title or str(chat_id), message.from_user.id)
-    await audit("CHANNEL_ADDED", actor=message.from_user.id, target=None,
-                chat_id=chat_id, title=chat.title)
+    await audit(
+        "CHANNEL_ADDED", actor=message.from_user.id,
+        chat_id=chat_id, title=chat.title,
+    )
     await state.clear()
     await message.answer(f"✅ Added channel: {chat.title}")
 
@@ -315,17 +374,30 @@ async def join_request_handler(request: ChatJoinRequest, bot: Bot):
     invite = request.invite_link.invite_link if request.invite_link else None
     record = await db.get_access_by_invite(request.chat.id, invite) if invite else None
     membership = await db.get_membership(request.from_user.id)
-    valid = bool(record and record["user_id"] == request.from_user.id
-                 and membership and membership["expires_at"] > datetime.now(timezone.utc))
+    valid = bool(
+        record
+        and record["user_id"] == request.from_user.id
+        and record["status"] == "pending"
+        and membership
+        and membership["expires_at"] > datetime.now(timezone.utc)
+    )
     if valid:
         await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
         await db.set_access_status(request.from_user.id, request.chat.id, "joined")
-        await bot.revoke_chat_invite_link(request.chat.id, invite)
-        await audit("JOIN_APPROVED", actor=None, target=request.from_user.id, chat_id=request.chat.id)
+        try:
+            await bot.revoke_chat_invite_link(request.chat.id, invite)
+        except TelegramBadRequest:
+            log.warning("Could not revoke used invite for user_id=%s chat_id=%s",
+                        request.from_user.id, request.chat.id)
+        await audit(
+            "JOIN_APPROVED", target=request.from_user.id, chat_id=request.chat.id
+        )
     else:
         await bot.decline_chat_join_request(request.chat.id, request.from_user.id)
-        await audit("JOIN_REJECTED", actor=None, target=request.from_user.id,
-                    chat_id=request.chat.id, reason="no matching active membership/invite")
+        await audit(
+            "JOIN_REJECTED", target=request.from_user.id,
+            chat_id=request.chat.id, reason="no matching active membership/invite",
+        )
 
 
 async def process_warnings(bot: Bot, hours: int):
@@ -334,71 +406,109 @@ async def process_warnings(bot: Bot, hours: int):
         try:
             await bot.send_message(
                 row["user_id"],
-                f"⏰ Premium expiry reminder: your membership expires in {hours} hours, at {fmt_time(row['expires_at'])}. Please contact an admin to renew."
+                f"⏰ Premium expiry reminder: your membership expires in {hours} hours, "
+                f"at {fmt_time(row['expires_at'])}. Please contact an admin to renew.",
             )
-            await audit("WARNING_SENT", target=row["user_id"], hours=hours,
-                        membership_id=row["id"], expires_at=row["expires_at"].isoformat())
+            await audit(
+                "WARNING_SENT", target=row["user_id"], hours=hours,
+                membership_id=row["id"], expires_at=row["expires_at"].isoformat(),
+            )
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
-            await audit("WARNING_FAILED", target=row["user_id"], hours=hours,
-                        membership_id=row["id"], error=type(exc).__name__)
+            await audit(
+                "WARNING_FAILED", target=row["user_id"], hours=hours,
+                membership_id=row["id"], error=type(exc).__name__,
+                message=str(exc)[:200],
+            )
 
 
 async def process_expiries(bot: Bot):
-    rows = await db.due_memberships()
-    for row in rows:
+    due = await db.due_memberships()
+    for row in due:
         await db.mark_expired(row["id"])
-        await audit("MEMBER_EXPIRED", target=row["user_id"], membership_id=row["id"],
-                    expires_at=row["expires_at"].isoformat())
-        for channel in await db.channels():
-            chat_id = channel["chat_id"]
+        await audit(
+            "MEMBER_EXPIRED", target=row["user_id"], membership_id=row["id"],
+            expires_at=row["expires_at"].isoformat(),
+        )
+
+    # Retry all outstanding channel removals for expired memberships on every pass.
+    pending = await db.expired_access()
+    for access in pending:
+        user_id, chat_id = access["user_id"], access["chat_id"]
+        if access["invite_link"]:
             try:
-                await bot.ban_chat_member(chat_id=chat_id, user_id=row["user_id"])
-                await db.set_access_status(row["user_id"], chat_id, "removed")
-                await audit("MEMBER_REMOVED", target=row["user_id"], chat_id=chat_id, result="success")
-            except (TelegramBadRequest, TelegramForbiddenError) as exc:
-                await audit("MEMBER_REMOVED", target=row["user_id"], chat_id=chat_id,
-                            result="failed", error=type(exc).__name__, message=str(exc)[:200])
+                await bot.revoke_chat_invite_link(chat_id, access["invite_link"])
+            except TelegramBadRequest:
+                pass
+        try:
+            await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
+            await db.set_access_status(user_id, chat_id, "removed")
+            await audit("MEMBER_REMOVED", target=user_id, chat_id=chat_id, result="success")
+        except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            await db.set_access_status(user_id, chat_id, "failed")
+            await audit(
+                "MEMBER_REMOVED", target=user_id, chat_id=chat_id,
+                result="failed", error=type(exc).__name__, message=str(exc)[:200],
+            )
 
 
 async def scheduler_tick(bot: Bot):
-    # Reconciliation runs repeatedly, so missed jobs during downtime are recovered.
-    await process_warnings(bot, 48)
-    await process_warnings(bot, 24)
-    await process_expiries(bot)
+    # Reconciliation runs repeatedly, so missed warnings/removals are recovered after downtime.
+    try:
+        await process_warnings(bot, 48)
+        await process_warnings(bot, 24)
+        await process_expiries(bot)
+    except Exception:
+        log.exception("SCHEDULER_RECONCILIATION_FAILED")
 
 
 async def on_startup(bot: Bot):
-    global db
+    global db, scheduler
     db = await Database.connect(settings.database_url)
     scheduler = AsyncIOScheduler(timezone=IST)
-    scheduler.add_job(scheduler_tick, IntervalTrigger(minutes=10), args=[bot],
-                      id="membership_reconciliation", replace_existing=True,
-                      max_instances=1, coalesce=True)
+    scheduler.add_job(
+        scheduler_tick, IntervalTrigger(minutes=10), args=[bot],
+        id="membership_reconciliation", replace_existing=True,
+        max_instances=1, coalesce=True,
+    )
     scheduler.start()
-    bot["scheduler"] = scheduler
-    log.info("Premium Manager started; timezone=%s configured_admins=%d",
-             settings.timezone, len(settings.admin_ids))
+    log.info(
+        "Premium Manager started; timezone=%s configured_admins=%d",
+        settings.timezone, len(settings.admin_ids),
+    )
     await scheduler_tick(bot)
 
 
 async def on_shutdown(bot: Bot):
-    scheduler = bot.get("scheduler")
+    global scheduler
     if scheduler:
         scheduler.shutdown(wait=False)
+        scheduler = None
     await db.close()
 
 
 async def main():
-    bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    bot = Bot(
+        settings.bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
     dp.message.register(start_handler, CommandStart())
-    dp.message.register(lambda m: m.answer("Use /start to open the membership menu."), Command("help"))
+    dp.message.register(
+        lambda m: m.answer("Use /start to open the membership menu."),
+        Command("help"),
+    )
     dp.callback_query.register(admin_home, F.data == "admin:home")
     dp.callback_query.register(status_handler, F.data == "user:status")
-    dp.callback_query.register(lambda c: c.message.edit_text("Main menu", reply_markup=main_keyboard(is_admin(c.from_user.id))), F.data == "menu:home")
+    dp.callback_query.register(refresh_links_handler, F.data == "user:links")
+    dp.callback_query.register(
+        lambda c: c.message.edit_text(
+            "Main menu", reply_markup=main_keyboard(is_admin(c.from_user.id))
+        ),
+        F.data == "menu:home",
+    )
     dp.callback_query.register(begin_add, F.data == "admin:add")
     dp.callback_query.register(validate_callback, F.data.startswith("validate:"))
     dp.callback_query.register(members_handler, F.data == "admin:members")
