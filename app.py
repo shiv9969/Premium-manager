@@ -88,8 +88,15 @@ async def require_admin(callback: CallbackQuery) -> bool:
 async def issue_invites(bot: Bot, user_id: int) -> int:
     channels = await db.channels()
     sent = []
+    previous_access = await db.access_for_user(user_id)
     for channel in channels:
         chat_id = channel["chat_id"]
+        for old in previous_access:
+            if old["chat_id"] == chat_id and old["invite_link"]:
+                try:
+                    await bot.revoke_chat_invite_link(chat_id, old["invite_link"])
+                except TelegramBadRequest:
+                    pass
         try:
             await bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
         except TelegramBadRequest:
