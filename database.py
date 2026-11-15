@@ -12,6 +12,12 @@ CREATE TABLE IF NOT EXISTS users (
     registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS admins (
+    telegram_id BIGINT PRIMARY KEY,
+    role TEXT NOT NULL CHECK (role IN ('owner','admin')),
+    added_by BIGINT,
+    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS memberships (
     id BIGSERIAL PRIMARY KEY,
     user_id BIGINT NOT NULL REFERENCES users(telegram_id),
@@ -65,6 +71,37 @@ class Database:
 
     async def close(self) -> None:
         await self.pool.close()
+
+    async def bootstrap_owners(self, owner_ids: set[int]) -> None:
+        async with self.pool.acquire() as conn:
+            for owner_id in owner_ids:
+                await conn.execute(
+                    """INSERT INTO admins(telegram_id, role) VALUES($1,'owner')
+                       ON CONFLICT(telegram_id) DO UPDATE SET role='owner'""",
+                    owner_id,
+                )
+
+    async def admin_ids(self) -> set[int]:
+        rows = await self.pool.fetch("SELECT telegram_id FROM admins")
+        return {int(row["telegram_id"]) for row in rows}
+
+    async def list_admins(self):
+        return await self.pool.fetch(
+            "SELECT telegram_id, role, added_by, added_at FROM admins ORDER BY role, telegram_id"
+        )
+
+    async def add_admin(self, telegram_id: int, owner_id: int) -> None:
+        await self.pool.execute(
+            """INSERT INTO admins(telegram_id, role, added_by) VALUES($1,'admin',$2)
+               ON CONFLICT(telegram_id) DO UPDATE SET role='admin', added_by=$2""",
+            telegram_id, owner_id,
+        )
+
+    async def remove_admin(self, telegram_id: int) -> bool:
+        result = await self.pool.execute(
+            "DELETE FROM admins WHERE telegram_id=$1 AND role='admin'", telegram_id
+        )
+        return result.endswith("1")
 
     async def audit(self, event: str, actor_id: int | None = None,
                     target_id: int | None = None, details: dict[str, Any] | None = None) -> None:
