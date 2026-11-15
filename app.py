@@ -21,9 +21,11 @@ from config import settings
 from database import Database
 
 
+logging.Formatter.converter = lambda timestamp: datetime.fromtimestamp(timestamp, IST).timetuple()
 logging.basicConfig(
     level=getattr(logging, settings.log_level, logging.INFO),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format="%(asctime)s IST %(levelname)s %(name)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("premium_manager")
 IST = ZoneInfo(settings.timezone)
