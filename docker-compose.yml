@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: premium_manager
+      POSTGRES_USER: premium
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U premium -d premium_manager"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://premium:${POSTGRES_PASSWORD:-change_me}@db:5432/premium_manager
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  postgres_data:
