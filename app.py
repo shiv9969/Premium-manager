@@ -95,7 +95,7 @@ async def issue_invites(bot: Bot, user_id: int) -> int:
             if old["chat_id"] == chat_id and old["invite_link"]:
                 try:
                     await bot.revoke_chat_invite_link(chat_id, old["invite_link"])
-                except TelegramBadRequest:
+                except (TelegramBadRequest, TelegramForbiddenError):
                     pass
         try:
             await bot.unban_chat_member(chat_id=chat_id, user_id=user_id, only_if_banned=True)
@@ -393,7 +393,7 @@ async def join_request_handler(request: ChatJoinRequest, bot: Bot):
         await db.set_access_status(request.from_user.id, request.chat.id, "joined")
         try:
             await bot.revoke_chat_invite_link(request.chat.id, invite)
-        except TelegramBadRequest:
+        except (TelegramBadRequest, TelegramForbiddenError):
             log.warning("Could not revoke used invite for user_id=%s chat_id=%s",
                         request.from_user.id, request.chat.id)
         await audit(
@@ -444,7 +444,7 @@ async def process_expiries(bot: Bot):
         if access["invite_link"]:
             try:
                 await bot.revoke_chat_invite_link(chat_id, access["invite_link"])
-            except TelegramBadRequest:
+            except (TelegramBadRequest, TelegramForbiddenError):
                 pass
         try:
             await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
