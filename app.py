@@ -354,7 +354,7 @@ async def validate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot
             error=type(exc).__name__, message=str(exc)[:300],
         )
         await callback.message.edit_text(
-            f"✅ Membership saved until {{fmt_time(expiry) if expiry else 'Unlimited'}, but access delivery failed. "
+            f"✅ Membership saved until {fmt_time(expiry) if expiry else 'Unlimited'}, but access delivery failed. "
             "Check bot permissions and whether the user has started the bot."
         )
         await callback.answer("Saved; access delivery needs attention.", show_alert=True)
