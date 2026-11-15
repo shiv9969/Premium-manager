@@ -134,6 +134,75 @@ async def issue_invites(bot: Bot, user_id: int) -> int:
     return len(sent)
 
 
+DURATION_UNITS = {
+    "minute": 60, "minutes": 60, "min": 60, "mins": 60, "m": 60,
+    "hour": 3600, "hours": 3600, "hr": 3600, "hrs": 3600, "h": 3600,
+    "day": 86400, "days": 86400, "d": 86400,
+    "week": 604800, "weeks": 604800, "w": 604800,
+    "month": 2592000, "months": 2592000, "mo": 2592000,
+    "year": 31536000, "years": 31536000, "y": 31536000,
+}
+
+def parse_premium_duration(value: str):
+    raw = value.strip().lower()
+    if raw in {"unlimited", "forever", "permanent", "lifetime", "life"}:
+        return None, "Unlimited"
+    parts = raw.split()
+    if len(parts) != 2 or not parts[0].isdigit():
+        raise ValueError("Use 1 minute, 12 hours, 1 month, 365 days, or unlimited.")
+    amount, unit = int(parts[0]), parts[1]
+    if amount < 1 or unit not in DURATION_UNITS:
+        raise ValueError("Unsupported duration. Try 1 minute, 1 month, or unlimited.")
+    seconds = amount * DURATION_UNITS[unit]
+    if seconds < 60:
+        raise ValueError("Minimum premium duration is 1 minute.")
+    if seconds > 100 * 365 * 86400:
+        raise ValueError("Maximum timed duration is 100 years. Use unlimited for permanent access.")
+    return seconds, f"{amount} {unit}"
+
+async def addpremium_command(message: Message, command: CommandObject, bot: Bot):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id):
+        await audit("ADMIN_UNAUTHORIZED", actor=admin_id, action="addpremium_command")
+        await message.answer("You are not authorized to use this command.")
+        return
+    await audit("ADMIN_AUTHORIZED", actor=admin_id, action="addpremium_command")
+    args = (command.args or "").strip()
+    target_id = None
+    duration_text = args
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target = message.reply_to_message.from_user
+        target_id = target.id
+        if not await db.get_user(target_id):
+            await db.register_user(target_id, target.username, target.first_name)
+            await audit("NEW_USER", actor=target_id, target=target_id, username=target.username, first_name=target.first_name, source="admin_reply_addpremium")
+    else:
+        parts = args.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].isdigit():
+            target_id = int(parts[0])
+            duration_text = parts[1]
+    if not target_id or not duration_text:
+        await message.answer("Usage: /addpremium USER_ID 1 month\\nOr reply to a user message with /addpremium 1 month.\\nExamples: 1 minute, 12 hours, 1 month, 365 days, unlimited.")
+        return
+    if not await db.get_user(target_id):
+        await message.answer("User has not started the bot yet. Ask them to send /start, then try again.")
+        return
+    try:
+        seconds, duration_label = parse_premium_duration(duration_text)
+    except ValueError as exc:
+        await message.answer(str(exc))
+        return
+    starts, expiry = await db.grant_premium(target_id, seconds, admin_id)
+    await audit("PREMIUM_ADDED_COMMAND", actor=admin_id, target=target_id, duration=duration_label, duration_seconds=seconds, starts_at=starts.isoformat(), expires_at=expiry.isoformat() if expiry else None, unlimited=expiry is None)
+    try:
+        links = await issue_invites(bot, target_id)
+        delivery = f"Channel links created: {links}"
+    except (TelegramForbiddenError, TelegramBadRequest) as exc:
+        await audit("ACCESS_DELIVERY_FAILED", actor=admin_id, target=target_id, error=type(exc).__name__, message=str(exc)[:250])
+        delivery = "Premium saved, but channel links could not be delivered; check bot permissions."
+    expiry_text = fmt_time(expiry) if expiry else "Unlimited"
+    await message.answer(f"Premium added for {target_id}.\\nDuration: {duration_label}\\nExpiry: {expiry_text}\\n{delivery}")
+
 async def start_handler(message: Message):
     user = message.from_user
     is_new = await db.register_user(user.id, user.username, user.first_name)
@@ -581,6 +650,7 @@ async def main():
     dp.shutdown.register(on_shutdown)
 
     dp.message.register(start_handler, CommandStart())
+    dp.message.register(addpremium_command, Command("addpremium"))
     dp.message.register(
         lambda m: m.answer("Use /start to open the membership menu."),
         Command("help"),
