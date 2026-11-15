@@ -182,7 +182,7 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
             target_id = int(parts[0])
             duration_text = parts[1]
     if not target_id or not duration_text:
-        await message.answer("Usage: /addpremium USER_ID 1 month\\nOr reply to a user message with /addpremium 1 month.\\nExamples: 1 minute, 12 hours, 1 month, 365 days, unlimited.")
+        await message.answer("Usage: /addpremium USER_ID 1 month\nOr reply to a user message with /addpremium 1 month.\nExamples: 1 minute, 12 hours, 1 month, 365 days, unlimited.")
         return
     if not await db.get_user(target_id):
         await message.answer("User has not started the bot yet. Ask them to send /start, then try again.")
@@ -201,7 +201,7 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
         await audit("ACCESS_DELIVERY_FAILED", actor=admin_id, target=target_id, error=type(exc).__name__, message=str(exc)[:250])
         delivery = "Premium saved, but channel links could not be delivered; check bot permissions."
     expiry_text = fmt_time(expiry) if expiry else "Unlimited"
-    await message.answer(f"Premium added for {target_id}.\\nDuration: {duration_label}\\nExpiry: {expiry_text}\\n{delivery}")
+    await message.answer(f"Premium added for {target_id}.\nDuration: {duration_label}\nExpiry: {expiry_text}\n{delivery}")
 
 async def start_handler(message: Message):
     user = message.from_user
