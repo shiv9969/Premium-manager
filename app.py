@@ -326,7 +326,7 @@ async def logs_handler(callback: CallbackQuery):
                 f"  actor={row['actor_id']} target={row['target_id']} {details}"
             )
         text = "<b>Recent audit logs</b>\n\n" + "\n\n".join(lines)
-    await callback.message.edit_text(text[:4000], reply_markup=admin_keyboard())
+    await callback.message.edit_text(text[:4000], reply_markup=admin_keyboard(is_owner(callback.from_user.id)))
     await callback.answer()
 
 
@@ -396,7 +396,7 @@ async def owner_admins_handler(callback: CallbackQuery):
         return
     rows = await db.list_admins()
     lines = [f"• <code>{r['telegram_id']}</code> — {r['role']}" for r in rows]
-    text = "<b>Admin access</b>\\n" + ("\\n".join(lines) if lines else "No admins assigned.")
+    text = "<b>Admin access</b>\n" + ("\n".join(lines) if lines else "No admins assigned.")
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Assign Admin", callback_data="owner:add_admin")],
         [InlineKeyboardButton(text="➖ Remove Admin", callback_data="owner:remove_admin")],
@@ -557,7 +557,7 @@ async def on_startup(bot: Bot):
     scheduler.start()
     log.info(
         "Premium Manager started; timezone=%s configured_admins=%d",
-        settings.timezone, len(settings.admin_ids),
+        settings.timezone, len(authorized_admin_ids | settings.owner_ids),
     )
     await scheduler_tick(bot)
 
