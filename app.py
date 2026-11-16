@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import html
 from datetime import datetime, timezone
 import re
 from zoneinfo import ZoneInfo
@@ -33,6 +34,7 @@ IST = ZoneInfo(settings.timezone)
 db: Database
 scheduler: AsyncIOScheduler | None = None
 authorized_admin_ids: set[int] = set()
+bot_instance: Bot | None = None
 
 
 class AdminFlow(StatesGroup):
@@ -40,6 +42,7 @@ class AdminFlow(StatesGroup):
     duration = State()
     channel_id = State()
     admin_id = State()
+    log_channel_id = State()
 
 
 def fmt_time(value: datetime) -> str:
@@ -69,6 +72,28 @@ def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+async def send_audit_notification(event: str, actor: int | None, target: int | None, details: dict):
+    if not bot_instance:
+        return
+    try:
+        channel_id = await db.get_setting("log_channel_id")
+        if not channel_id:
+            return
+        when = datetime.now(IST).strftime("%d %b %Y, %I:%M:%S %p IST")
+        detail_text = html.escape(str(details))[:1800]
+        body = (
+            "🧾 <b>Premium Manager Log</b>\\n"
+            f"<b>Event:</b> <code>{html.escape(event)}</code>\\n"
+            f"<b>Time:</b> {when}\\n"
+            f"<b>Actor:</b> <code>{actor if actor is not None else 'System'}</code>\\n"
+            f"<b>Target:</b> <code>{target if target is not None else '—'}</code>\\n"
+            f"<b>Details:</b> <code>{detail_text or '—'}</code>"
+        )
+        await bot_instance.send_message(int(channel_id), body)
+    except Exception:
+        log.exception("AUDIT_CHANNEL_DELIVERY_FAILED event=%s", event)
+
+
 async def audit(event: str, actor: int | None = None, target: int | None = None, **details):
     try:
         await db.audit(event, actor, target, details)
@@ -77,6 +102,62 @@ async def audit(event: str, actor: int | None = None, target: int | None = None,
         raise
     log.info("AUDIT event=%s actor_id=%s target_user_id=%s details=%s",
              event, actor, target, details)
+    await send_audit_notification(event, actor, target, details)
+
+
+async def channels_view():
+    rows = await db.channels()
+    keyboard_rows = []
+    for channel in rows:
+        title = channel["title"]
+        if len(title) > 32:
+            title = title[:29] + "..."
+        keyboard_rows.append([
+            InlineKeyboardButton(text=f"📢 {title}", callback_data=f"channel:show:{channel['chat_id']}"),
+            InlineKeyboardButton(text="❌", callback_data=f"channel:remove:{channel['chat_id']}"),
+        ])
+    keyboard_rows.append([InlineKeyboardButton(text="➕ Add Channel", callback_data="channel:add")])
+    keyboard_rows.append([InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")])
+    summary = "\\n".join(f"• {r['title']}" for r in rows) or "No channels added yet."
+    return (
+        "<b>📢 Channel Management</b>\\nAdd premium channels here. Members receive personal join-request links for every active channel.\\n\\n"
+        f"<b>Configured ({len(rows)}):</b>\\n{summary}",
+        InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+    )
+
+
+async def admins_view():
+    rows = await db.list_admins()
+    keyboard_rows = []
+    for admin in rows:
+        uid = int(admin["telegram_id"])
+        role = admin["role"]
+        row = [InlineKeyboardButton(text=f"👤 {uid} ({role})", callback_data=f"owner:admininfo:{uid}")]
+        if role != "owner":
+            row.append(InlineKeyboardButton(text="❌", callback_data=f"owner:remove:{uid}"))
+        keyboard_rows.append(row)
+    keyboard_rows.extend([
+        [InlineKeyboardButton(text="➕ Add Admin", callback_data="owner:add_admin")],
+        [InlineKeyboardButton(text="📣 Logs Channel", callback_data="owner:logs_channel")],
+        [InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")],
+    ])
+    summary = "\\n".join(f"• <code>{r['telegram_id']}</code> — {r['role']}" for r in rows) or "No admins assigned."
+    log_id = await db.get_setting("log_channel_id")
+    log_summary = f"<code>{log_id}</code>" if log_id else "Not configured"
+    return (
+        "<b>🛡 Admin & Logs Management</b>\\nAdmins can validate premium and manage channels. Only the owner can add or remove admins.\\n\\n"
+        f"<b>Admins:</b>\\n{summary}\\n\\n<b>Logs channel:</b> {log_summary}",
+        InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+    )
+
+
+async def edit_saved_panel(message: Message, state: FSMContext, text: str, markup=None):
+    data = await state.get_data()
+    chat_id, message_id = data.get("panel_chat_id"), data.get("panel_message_id")
+    if chat_id and message_id:
+        await message.bot.edit_message_text(
+            chat_id=chat_id, message_id=message_id, text=text, reply_markup=markup
+        )
 
 
 def is_admin(user_id: int) -> bool:
