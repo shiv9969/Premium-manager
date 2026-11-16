@@ -41,7 +41,7 @@ Each audit record includes an IST timestamp, actor ID where applicable, target u
 ## Run with Docker
 
 1. Copy .env.example to .env.
-2. Set BOT_TOKEN, OWNER_IDS (the bootstrap owner Telegram ID), and a strong POSTGRES_PASSWORD. Admins are assigned later from the bot's Owner → Manage Admins panel; no ADMIN_IDS list is needed.
+2. Set BOT_TOKEN, OWNER_IDS (the bootstrap owner Telegram ID), DATABASE_URL, PUBLIC_CHANNEL_URL and PREMIUM_UPI_ID. Admins are assigned later from the bot's Owner → Manage Admins panel; no ADMIN_IDS list is needed.
 3. Start: docker compose up -d --build
 4. Inspect logs: docker compose logs -f bot
 
