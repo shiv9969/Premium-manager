@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC);
+CREATE TABLE IF NOT EXISTS warning_notifications (
+    membership_id BIGINT NOT NULL REFERENCES memberships(id) ON DELETE CASCADE,
+    hours_before_expiry INTEGER NOT NULL CHECK (hours_before_expiry IN (24,48)),
+    sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY(membership_id, hours_before_expiry)
+);
 """
 
 
@@ -275,9 +281,17 @@ class Database:
             """SELECT m.*,u.username FROM memberships m JOIN users u ON u.telegram_id=m.user_id
                WHERE m.status='active' AND m.expires_at>NOW()
                AND m.expires_at<=NOW()+($1 * INTERVAL '1 hour')
-               AND NOT EXISTS (SELECT 1 FROM audit_logs a WHERE a.event='WARNING_SENT'
-                 AND a.target_id=m.user_id AND (a.details->>'hours')::int=$1
-                 AND (a.details->>'membership_id')::bigint=m.id)""", hours
+               AND NOT EXISTS (
+                 SELECT 1 FROM warning_notifications wn
+                 WHERE wn.membership_id=m.id AND wn.hours_before_expiry=$1
+               )""", hours
+        )
+
+    async def mark_warning_sent(self, membership_id: int, hours: int) -> None:
+        await self.pool.execute(
+            """INSERT INTO warning_notifications(membership_id, hours_before_expiry)
+               VALUES($1,$2) ON CONFLICT(membership_id,hours_before_expiry) DO NOTHING""",
+            membership_id, hours,
         )
 
     async def mark_expired(self, membership_id: int):
