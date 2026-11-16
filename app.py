@@ -816,8 +816,16 @@ async def on_shutdown(bot: Bot):
 
 
 async def cancel_flow(message: Message, state: FSMContext):
+    current = await state.get_state()
+    if current == AdminFlow.channel_id.state:
+        text, markup = await channels_view()
+        await edit_saved_panel(message, state, text, markup)
+    elif current in {AdminFlow.admin_id.state, AdminFlow.log_channel_id.state}:
+        text, markup = await admins_view()
+        await edit_saved_panel(message, state, text, markup)
+    else:
+        await message.answer("Cancelled. Use the menu buttons to continue.")
     await state.clear()
-    await message.answer("Cancelled. Use the menu buttons to continue.")
 
 
 async def main():
@@ -838,7 +846,7 @@ async def main():
     )
     dp.callback_query.register(admin_home, F.data == "admin:home")
     dp.callback_query.register(owner_admins_handler, F.data == "owner:admins")
-    dp.callback_query.register(owner_begin_admin_change, F.data.in_({"owner:add_admin", "owner:remove_admin"}))
+    dp.callback_query.register(owner_begin_admin_change, F.data == "owner:add_admin")
     dp.callback_query.register(status_handler, F.data == "user:status")
     dp.callback_query.register(refresh_links_handler, F.data == "user:links")
     dp.callback_query.register(
