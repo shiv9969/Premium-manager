@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS channel_access (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY(user_id, chat_id)
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGSERIAL PRIMARY KEY,
     event TEXT NOT NULL,
@@ -103,6 +108,16 @@ class Database:
             "DELETE FROM admins WHERE telegram_id=$1 AND role='admin'", telegram_id
         )
         return result.endswith("1")
+
+    async def get_setting(self, key: str) -> str | None:
+        return await self.pool.fetchval("SELECT value FROM app_settings WHERE key=$1", key)
+
+    async def set_setting(self, key: str, value: str) -> None:
+        await self.pool.execute(
+            """INSERT INTO app_settings(key,value) VALUES($1,$2)
+               ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, updated_at=NOW()""",
+            key, value,
+        )
 
     async def audit(self, event: str, actor_id: int | None = None,
                     target_id: int | None = None, details: dict[str, Any] | None = None) -> None:
