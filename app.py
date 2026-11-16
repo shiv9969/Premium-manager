@@ -78,18 +78,19 @@ def user_back_keyboard() -> InlineKeyboardMarkup:
 
 async def user_plans_handler(callback: CallbackQuery):
     plans = [
-        ("1 Month", "30 days"),
-        ("3 Months", "90 days"),
-        ("6 Months", "180 days"),
-        ("12 Months", "365 days"),
+        ("1 Month", "30 days", "₹99"),
+        ("3 Months", "90 days", "₹249"),
+        ("6 Months", "180 days", "₹449"),
+        ("12 Months", "365 days", "₹799"),
     ]
-    plan_lines = "\n".join(f"• <b>{name}</b> — {duration}" for name, duration in plans)
+    plan_lines = "\n".join(f"• <b>{name}</b> — {duration} — <b>{price}</b>" for name, duration, price in plans)
     text = (
         "💎 <b>Premium Membership Plans</b>\n\n"
         "Choose the membership duration that suits you. Premium access unlocks our private channels "
         "and exclusive member content.\n\n"
         f"{plan_lines}\n\n"
-        "💬 Plan pricing will be confirmed by our team. Tap <b>Buy Premium</b> to view payment details."
+        "🧪 <b>TEST PRICES</b> — demo amounts only; final pricing may change.\n"
+        "Tap <b>Buy Premium</b> to view test payment details."
     )
     await callback.message.edit_text(text, reply_markup=user_back_keyboard())
     await callback.answer()
@@ -99,12 +100,10 @@ async def user_buy_handler(callback: CallbackQuery):
     upi_id = settings.premium_upi_id
     if upi_id:
         text = (
-            "💳 <b>Buy Premium Membership</b>\n\n"
-            "1. Open any UPI app (GPay, PhonePe, Paytm, BHIM).\n"
-            f"2. Pay to this UPI ID: <code>{html.escape(upi_id)}</code>\n"
-            "3. Keep your payment reference / UTR safe.\n\n"
-            "⚠️ Membership is activated only after admin verifies your payment. "
-            "Payment submission and automatic verification will be added later."
+            "🧪 <b>TEST MODE — DO NOT SEND MONEY</b>\n\n"
+            f"Demo UPI ID: <code>{html.escape(upi_id)}</code>\n"
+            "This is a placeholder for testing the menu only, not a real payment address.\n\n"
+            "⚠️ Payment submission and verification are not enabled yet."
         )
     else:
         text = (
@@ -875,6 +874,8 @@ async def on_startup(bot: Bot):
     bot_instance = bot
     db = await Database.connect(settings.database_url)
     await db.bootstrap_owners(settings.owner_ids)
+    if settings.log_channel_id:
+        await db.set_setting("log_channel_id", settings.log_channel_id)
     authorized_admin_ids.clear()
     authorized_admin_ids.update(await db.admin_ids())
     scheduler = AsyncIOScheduler(timezone=IST)
