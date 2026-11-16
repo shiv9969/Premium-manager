@@ -265,7 +265,7 @@ class Database:
                  AND NOT EXISTS (
                    SELECT 1 FROM memberships active
                    WHERE active.user_id=ca.user_id AND active.status='active'
-                     AND active.expires_at>NOW()
+                     AND (active.expires_at IS NULL OR active.expires_at>NOW())
                  )
                ORDER BY m.expires_at"""
         )
