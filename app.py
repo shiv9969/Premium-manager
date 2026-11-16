@@ -97,7 +97,8 @@ async def user_plans_handler(callback: CallbackQuery):
 
 
 async def user_buy_handler(callback: CallbackQuery):
-    upi_id = settings.premium_upi_id
+    # Deliberately use an invalid placeholder while payment is in test mode.
+    upi_id = "premium-test@invalid"
     if upi_id:
         text = (
             "🧪 <b>TEST MODE — DO NOT SEND MONEY</b>\n\n"
