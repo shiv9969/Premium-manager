@@ -50,13 +50,91 @@ def fmt_time(value: datetime) -> str:
 
 
 def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")],
-        [InlineKeyboardButton(text="🔗 Get / Refresh Channel Links", callback_data="user:links")],
-    ]
     if is_admin:
-        rows.append([InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")])
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")]
+        ])
+    rows = [
+        [InlineKeyboardButton(text="📢 Join Our Community", callback_data="user:public_channel")],
+        [InlineKeyboardButton(text="ℹ️ Membership Info", callback_data="user:membership_info")],
+        [InlineKeyboardButton(text="💎 Membership Plans", callback_data="user:plans")],
+        [InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")],
+        [InlineKeyboardButton(text="💳 Buy Premium", callback_data="user:buy")],
+        [InlineKeyboardButton(text="🔗 My Premium Channel Links", callback_data="user:links")],
+    ]
+    if settings.public_channel_url.startswith(("https://t.me/", "https://telegram.me/")):
+        rows[0][0] = InlineKeyboardButton(
+            text="📢 Join Our Community", url=settings.public_channel_url
+        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def user_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Buy Premium", callback_data="user:buy")],
+        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu:home")],
+    ])
+
+
+async def user_plans_handler(callback: CallbackQuery):
+    plans = [
+        ("1 Month", "30 days"),
+        ("3 Months", "90 days"),
+        ("6 Months", "180 days"),
+        ("12 Months", "365 days"),
+    ]
+    plan_lines = "\\n".join(f"• <b>{name}</b> — {duration}" for name, duration in plans)
+    text = (
+        "💎 <b>Premium Membership Plans</b>\\n\\n"
+        "Choose the membership duration that suits you. Premium access unlocks our private channels "
+        "and exclusive member content.\\n\\n"
+        f"{plan_lines}\\n\\n"
+        "💬 Plan pricing will be confirmed by our team. Tap <b>Buy Premium</b> to view payment details."
+    )
+    await callback.message.edit_text(text, reply_markup=user_back_keyboard())
+    await callback.answer()
+
+
+async def user_buy_handler(callback: CallbackQuery):
+    upi_id = settings.premium_upi_id
+    if upi_id:
+        text = (
+            "💳 <b>Buy Premium Membership</b>\\n\\n"
+            "1. Open any UPI app (GPay, PhonePe, Paytm, BHIM).\\n"
+            f"2. Pay to this UPI ID: <code>{html.escape(upi_id)}</code>\\n"
+            "3. Keep your payment reference / UTR safe.\\n\\n"
+            "⚠️ Membership is activated only after admin verifies your payment. "
+            "Payment submission and automatic verification will be added later."
+        )
+    else:
+        text = (
+            "💳 <b>Buy Premium Membership</b>\\n\\n"
+            "UPI payment details are being configured. Please check back soon or contact an admin."
+        )
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 View Plans", callback_data="user:plans")],
+        [InlineKeyboardButton(text="⬅️ Main Menu", callback_data="menu:home")],
+    ]))
+    await callback.answer()
+
+
+async def user_public_channel_handler(callback: CallbackQuery):
+    if settings.public_channel_url.startswith(("https://t.me/", "https://telegram.me/")):
+        await callback.answer("Tap the community button to open our channel.")
+    else:
+        await callback.answer("Public channel link has not been configured yet.", show_alert=True)
+
+
+async def user_membership_info_handler(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "✨ <b>Welcome to our Premium Community!</b>\\n\\n"
+        "🚀 Get closer to exclusive content, valuable updates and a community built for people "
+        "who want to learn, grow and stay ahead.\\n\\n"
+        "💎 Choose a membership plan to unlock private-channel access. "
+        "Your access remains active for the plan duration.",
+        reply_markup=user_back_keyboard(),
+    )
+    await callback.answer()
 
 
 def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
@@ -290,11 +368,19 @@ async def start_handler(message: Message):
                     username=user.username, first_name=user.first_name)
     if is_admin(user.id):
         await audit("ADMIN_AUTHORIZED", actor=user.id, action="start")
-    await message.answer(
-        "Welcome to Premium Membership Manager!\n\n"
-        "Use the buttons below to check your membership or get your access links.",
-        reply_markup=main_keyboard(is_admin(user.id)),
-    )
+    if is_admin(user.id):
+        welcome = (
+            "🛠 <b>Welcome, Admin!</b>\\n\\n"
+            "Manage memberships, premium channels, admins and audit logs from your control panel."
+        )
+    else:
+        welcome = (
+            "🌟 <b>Welcome to Our Premium Community!</b> 🌟\\n\\n"
+            "🚀 Be part of a space built for growth, exclusive updates and premium experiences.\\n"
+            "💎 Unlock members-only content, stay connected and get more value from every update.\\n\\n"
+            "✨ Your next level starts here — explore our community and choose your membership plan below!"
+        )
+    await message.answer(welcome, reply_markup=main_keyboard(is_admin(user.id)))
 
 
 async def status_handler(callback: CallbackQuery):
@@ -848,6 +934,10 @@ async def main():
     dp.callback_query.register(owner_admins_handler, F.data == "owner:admins")
     dp.callback_query.register(owner_begin_admin_change, F.data == "owner:add_admin")
     dp.callback_query.register(status_handler, F.data == "user:status")
+    dp.callback_query.register(user_plans_handler, F.data == "user:plans")
+    dp.callback_query.register(user_buy_handler, F.data == "user:buy")
+    dp.callback_query.register(user_public_channel_handler, F.data == "user:public_channel")
+    dp.callback_query.register(user_membership_info_handler, F.data == "user:membership_info")
     dp.callback_query.register(refresh_links_handler, F.data == "user:links")
     dp.callback_query.register(
         lambda c: c.message.edit_text(
