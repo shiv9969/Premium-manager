@@ -450,6 +450,10 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
     await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="channel_add_input")
     try:
         chat_id = int(message.text.strip())
+        try:
+            await message.delete()
+        except (TelegramBadRequest, TelegramForbiddenError):
+            pass
         chat = await bot.get_chat(chat_id)
         me = await bot.get_me()
         member = await bot.get_chat_member(chat_id, me.id)
