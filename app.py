@@ -46,21 +46,27 @@ def fmt_time(value: datetime) -> str:
     return value.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
 
 
-def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
+def main_keyboard(is_admin: bool, is_premium: bool = False) -> InlineKeyboardMarkup:
     if is_admin:
         return InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")]
         ])
     rows = [
-        [InlineKeyboardButton(text="ℹ️ Membership Info", callback_data="user:membership_info")],
         [InlineKeyboardButton(text="💎 Membership Plans", callback_data="user:plans")],
-        [InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")],
-        [InlineKeyboardButton(text="💳 Buy Premium", callback_data="user:buy")],
-        [InlineKeyboardButton(text="🔗 My Premium Channel Links", callback_data="user:links")],
     ]
-    if settings.owner_ids:
-        rows.append([InlineKeyboardButton(text="📩 Contact Admin", url=f"tg://user?id={min(settings.owner_ids)}")])
+    if is_premium:
+        rows.append([
+            InlineKeyboardButton(text="🔗 My Premium Channel Links", callback_data="user:links")
+        ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def has_active_membership(membership) -> bool:
+    return bool(
+        membership
+        and (membership["expires_at"] is None
+             or membership["expires_at"] > datetime.now(timezone.utc))
+    )
 
 
 def user_back_keyboard() -> InlineKeyboardMarkup:
@@ -352,12 +358,16 @@ async def start_handler(message: Message):
             "💎 Unlock members-only content, stay connected and get more value from every update.\n\n"
             "✨ Your next level starts here — explore our community and choose your membership plan below!"
         )
-    await message.answer(welcome, reply_markup=main_keyboard(is_admin(user.id)))
+    membership = await db.get_membership(user.id) if not is_admin(user.id) else None
+    await message.answer(
+        welcome,
+        reply_markup=main_keyboard(is_admin(user.id), has_active_membership(membership)),
+    )
 
 
 async def status_handler(callback: CallbackQuery):
     membership = await db.get_membership(callback.from_user.id)
-    if membership and (membership["expires_at"] is None or membership["expires_at"] > datetime.now(timezone.utc)):
+    if has_active_membership(membership):
         if membership["expires_at"] is None:
             text = "🟢 <b>Premium Active</b>\nValid until: <b>Unlimited</b>"
         else:
@@ -371,7 +381,9 @@ async def status_handler(callback: CallbackQuery):
     else:
         text = "⚪ <b>No active premium membership.</b>\nPlease contact an administrator."
     await callback.message.edit_text(
-        text, reply_markup=main_keyboard(is_admin(callback.from_user.id))
+        text, reply_markup=main_keyboard(
+            is_admin(callback.from_user.id), has_active_membership(membership)
+        )
     )
     await callback.answer()
 
@@ -390,6 +402,17 @@ async def refresh_links_handler(callback: CallbackQuery, bot: Bot):
         await audit("ACCESS_DELIVERY_FAILED", target=callback.from_user.id,
                     error=type(exc).__name__, message=str(exc)[:250])
         await callback.answer("Could not create links. Please contact an admin.", show_alert=True)
+
+
+async def menu_home_handler(callback: CallbackQuery):
+    membership = await db.get_membership(callback.from_user.id) if not is_admin(callback.from_user.id) else None
+    await callback.message.edit_text(
+        "Main menu",
+        reply_markup=main_keyboard(
+            is_admin(callback.from_user.id), has_active_membership(membership)
+        ),
+    )
+    await callback.answer()
 
 
 async def admin_home(callback: CallbackQuery):
@@ -784,12 +807,7 @@ async def main():
     dp.callback_query.register(user_public_channel_handler, F.data == "user:public_channel")
     dp.callback_query.register(user_membership_info_handler, F.data == "user:membership_info")
     dp.callback_query.register(refresh_links_handler, F.data == "user:links")
-    dp.callback_query.register(
-        lambda c: c.message.edit_text(
-            "Main menu", reply_markup=main_keyboard(is_admin(c.from_user.id))
-        ),
-        F.data == "menu:home",
-    )
+    dp.callback_query.register(menu_home_handler, F.data == "menu:home")
     dp.callback_query.register(channels_handler, F.data == "admin:channels")
     dp.callback_query.register(begin_channel_add, F.data == "channel:add")
     dp.callback_query.register(show_channel_callback, F.data.startswith("channel:show:"))
