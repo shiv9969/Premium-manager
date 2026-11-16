@@ -18,6 +18,7 @@ class Settings:
     log_level: str
     public_channel_url: str
     premium_upi_id: str
+    log_channel_id: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -30,11 +31,17 @@ class Settings:
         owners = _csv_ints(os.getenv("OWNER_IDS", "1844994992"))
         if not owners:
             raise RuntimeError("Set at least one OWNER_IDS Telegram numeric ID")
+        raw_log_setting = os.getenv("LOG_LEVEL", "INFO").strip()
+        # Backward compatibility: a negative Telegram channel ID in LOG_LEVEL
+        # is treated as the private audit-log destination.
+        log_channel_id = raw_log_setting if raw_log_setting.startswith("-") and raw_log_setting[1:].isdigit() else os.getenv("LOG_CHANNEL_ID", "").strip()
+        log_level = "INFO" if log_channel_id and raw_log_setting == log_channel_id else raw_log_setting.upper()
         return cls(token, database_url, owners,
                    os.getenv("TIMEZONE", "Asia/Kolkata"),
-                   os.getenv("LOG_LEVEL", "INFO").upper(),
+                   log_level,
                    os.getenv("PUBLIC_CHANNEL_URL", "").strip(),
-                   os.getenv("PREMIUM_UPI_ID", "").strip())
+                   os.getenv("PREMIUM_UPI_ID", "premium-test@invalid").strip(),
+                   log_channel_id)
 
 
 settings = Settings.from_env()
