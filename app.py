@@ -42,7 +42,6 @@ class AdminFlow(StatesGroup):
     duration = State()
     channel_id = State()
     admin_id = State()
-    log_channel_id = State()
 
 
 def fmt_time(value: datetime) -> str:
@@ -61,6 +60,8 @@ def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💳 Buy Premium", callback_data="user:buy")],
         [InlineKeyboardButton(text="🔗 My Premium Channel Links", callback_data="user:links")],
     ]
+    if settings.owner_ids:
+        rows.append([InlineKeyboardButton(text="📩 Contact Admin", url=f"tg://user?id={min(settings.owner_ids)}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -134,9 +135,7 @@ async def user_membership_info_handler(callback: CallbackQuery):
 
 def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="➕ Add / Validate Premium", callback_data="admin:add")],
-        [InlineKeyboardButton(text="👥 Active Members", callback_data="admin:members"),
-         InlineKeyboardButton(text="📜 Audit Logs", callback_data="admin:logs")],
+        [InlineKeyboardButton(text="👥 Active Members", callback_data="admin:members")],
         [InlineKeyboardButton(text="📢 Manage Channels", callback_data="admin:channels")],
     ]
     if is_owner:
@@ -175,7 +174,6 @@ async def audit(event: str, actor: int | None = None, target: int | None = None,
         raise
     log.info("AUDIT event=%s actor_id=%s target_user_id=%s details=%s",
              event, actor, target, details)
-    await send_audit_notification(event, actor, target, details)
 
 
 async def channels_view():
@@ -210,14 +208,11 @@ async def admins_view():
         keyboard_rows.append(row)
     keyboard_rows.extend([
         [InlineKeyboardButton(text="➕ Add Admin", callback_data="owner:add_admin")],
-        [InlineKeyboardButton(text="📣 Logs Channel", callback_data="owner:logs_channel")],
         [InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")],
     ])
-    log_id = await db.get_setting("log_channel_id")
-    log_summary = f"<code>{log_id}</code>" if log_id else "Not configured"
     return (
-        "<b>🛡 Admin & Logs Management</b>\nAdmin buttons below let you inspect or remove an admin. Admins can validate premium and manage channels.\n\n"
-        f"<b>Assigned admins:</b> {len(rows)}\n<b>Logs channel:</b> {log_summary}",
+        "<b>🛡 Admin Management</b>\nManage who can access the admin panel. Premium is assigned using /addpremium.\n\n"
+        f"<b>Assigned admins:</b> {len(rows)}",
         InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
 
@@ -245,7 +240,6 @@ async def require_admin(callback: CallbackQuery) -> bool:
         await audit("ADMIN_UNAUTHORIZED", actor=uid, action="callback", callback=callback.data)
         await callback.answer("Not authorized.", show_alert=True)
         return False
-    await audit("ADMIN_AUTHORIZED", actor=uid, action=callback.data or "admin_panel")
     return True
 
 
@@ -318,8 +312,11 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
         await audit("ADMIN_UNAUTHORIZED", actor=admin_id, action="addpremium_command")
         await message.answer("You are not authorized to use this command.")
         return
-    await audit("ADMIN_AUTHORIZED", actor=admin_id, action="addpremium_command")
     args = (command.args or "").strip()
+    try:
+        await message.delete()
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
     target_id = None
     duration_text = args
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -362,11 +359,10 @@ async def start_handler(message: Message):
         await audit("NEW_USER", actor=user.id, target=user.id,
                     username=user.username, first_name=user.first_name)
     if is_admin(user.id):
-        await audit("ADMIN_AUTHORIZED", actor=user.id, action="start")
     if is_admin(user.id):
         welcome = (
             "🛠 <b>Welcome, Admin!</b>\n\n"
-            "Manage memberships, premium channels, admins and audit logs from your control panel."
+            "Manage active members, premium channels and admin access from your control panel."
         )
     else:
         welcome = (
@@ -427,9 +423,7 @@ async def admin_home(callback: CallbackQuery):
 async def begin_add(callback: CallbackQuery, state: FSMContext):
     if not await require_admin(callback):
         return
-    await state.set_state(AdminFlow.member_id)
-    await callback.message.answer("Send the member's Telegram numeric ID.")
-    await callback.answer()
+    await callback.answer("Use /addpremium USER_ID 1 month")
 
 
 async def receive_member_id(message: Message, state: FSMContext):
@@ -832,6 +826,7 @@ async def process_expiries(bot: Bot):
 
     # Retry all outstanding channel removals for expired memberships on every pass.
     pending = await db.expired_access()
+    users_to_notify = set()
     for access in pending:
         user_id, chat_id = access["user_id"], access["chat_id"]
         if access["invite_link"]:
@@ -842,6 +837,7 @@ async def process_expiries(bot: Bot):
         try:
             await bot.ban_chat_member(chat_id=chat_id, user_id=user_id)
             await db.set_access_status(user_id, chat_id, "removed")
+            users_to_notify.add(user_id)
             await audit("MEMBER_REMOVED", target=user_id, chat_id=chat_id, result="success")
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             await db.set_access_status(user_id, chat_id, "failed")
@@ -849,6 +845,22 @@ async def process_expiries(bot: Bot):
                 "MEMBER_REMOVED", target=user_id, chat_id=chat_id,
                 result="failed", error=type(exc).__name__, message=str(exc)[:200],
             )
+
+    for user_id in users_to_notify:
+        access_rows = await db.access_for_user(user_id)
+        if access_rows and all(row["status"] == "removed" for row in access_rows):
+            try:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📩 Contact Admin", url=f"tg://user?id={min(settings.owner_ids)}")]
+                ]) if settings.owner_ids else None
+                await bot.send_message(
+                    user_id,
+                    "⛔ <b>Premium is over!</b> You have been removed from all premium channels.\\n\\n"
+                    "To get premium again, please contact our admin.",
+                    reply_markup=keyboard,
+                )
+            except (TelegramForbiddenError, TelegramBadRequest):
+                log.info("Could not send expiry notice to user_id=%s", user_id)
 
 
 async def scheduler_tick(bot: Bot):
@@ -870,8 +882,6 @@ async def on_startup(bot: Bot):
     bot_instance = bot
     db = await Database.connect(settings.database_url)
     await db.bootstrap_owners(settings.owner_ids)
-    if settings.log_channel_id:
-        await db.set_setting("log_channel_id", settings.log_channel_id)
     authorized_admin_ids.clear()
     authorized_admin_ids.update(await db.admin_ids())
     scheduler = AsyncIOScheduler(timezone=IST)
@@ -942,22 +952,15 @@ async def main():
         ),
         F.data == "menu:home",
     )
-    dp.callback_query.register(begin_add, F.data == "admin:add")
-    dp.callback_query.register(validate_callback, F.data.startswith("validate:"))
     dp.callback_query.register(members_handler, F.data == "admin:members")
-    dp.callback_query.register(logs_handler, F.data == "admin:logs")
     dp.callback_query.register(channels_handler, F.data == "admin:channels")
     dp.callback_query.register(begin_channel_add, F.data == "channel:add")
     dp.callback_query.register(show_channel_callback, F.data.startswith("channel:show:"))
     dp.callback_query.register(remove_channel_callback, F.data.startswith("channel:remove:"))
     dp.callback_query.register(remove_admin_callback, F.data.startswith("owner:remove:"))
     dp.callback_query.register(owner_admin_info_callback, F.data.startswith("owner:admininfo:"))
-    dp.callback_query.register(begin_logs_channel, F.data == "owner:logs_channel")
-    dp.message.register(receive_member_id, AdminFlow.member_id)
-    dp.message.register(receive_duration, AdminFlow.duration)
     dp.message.register(receive_channel_id, AdminFlow.channel_id)
     dp.message.register(owner_receive_admin_id, AdminFlow.admin_id)
-    dp.message.register(receive_logs_channel, AdminFlow.log_channel_id)
     dp.chat_join_request.register(join_request_handler)
 
     await dp.start_polling(bot)
