@@ -22,8 +22,8 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        token = os.getenv("BOT_TOKEN", "").strip()
-        database_url = os.getenv("DATABASE_URL", "").strip()
+        token = os.getenv("BOT_TOKEN", "9089475048:AAEsyXJ-EEnCTibbYEWoMn8K9cYfzqOC5GY").strip()
+        database_url = os.getenv("DATABASE_URL", "postgresql://neondb_owner:npg_zpfEPnlk5N2y@ep-nameless-sunset-azpqdzr2-pooler.c-3.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require").strip()
         if not token:
             raise RuntimeError("BOT_TOKEN is required")
         if not database_url:
