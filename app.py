@@ -616,10 +616,28 @@ async def process_warnings(bot: Bot, hours: int):
     rows = await db.warning_candidates(hours)
     for row in rows:
         try:
+            warning_keyboard = None
+            if hours == 12 and settings.owner_ids:
+                warning_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🔄 Renew Now — Contact Admin",
+                        url=f"tg://user?id={min(settings.owner_ids)}",
+                    )]
+                ])
+            warning_text = (
+                f"⚠️ <b>FINAL WARNING!</b>\n\n"
+                f"Your Premium membership expires in <b>{hours} hours</b>, "
+                f"at {fmt_time(row['expires_at'])}.\n\n"
+                "Renew now to avoid losing access to all premium channels."
+                if hours == 12 else
+                f"⏰ Premium expiry reminder: your membership expires in {hours} hours, "
+                f"at {fmt_time(row['expires_at'])}. Please contact an admin to renew."
+            )
             await bot.send_message(
                 row["user_id"],
-                f"⏰ Premium expiry reminder: your membership expires in {hours} hours, "
-                f"at {fmt_time(row['expires_at'])}. Please contact an admin to renew.",
+                warning_text,
+                reply_markup=warning_keyboard,
+                parse_mode="HTML",
             )
             await db.mark_warning_sent(row["id"], hours)
             await audit(
