@@ -617,7 +617,7 @@ async def process_warnings(bot: Bot, hours: int):
     for row in rows:
         try:
             warning_keyboard = None
-            if hours == 12 and settings.owner_ids:
+            if settings.owner_ids:
                 warning_keyboard = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(
                         text="🔄 Renew Now — Contact Admin",
