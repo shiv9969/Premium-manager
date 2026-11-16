@@ -95,3 +95,8 @@ OWNER_IDS is the bootstrap/root owner setting and remains in deployment environm
 ## Test pricing and private logs
 
 The membership menu currently displays demo prices (₹99 / ₹249 / ₹449 / ₹799) and a deliberately invalid placeholder UPI ID. The Buy Premium screen is marked TEST MODE and explicitly tells users not to send money. Replace these only after confirming real prices and a real payment address. Set `LOG_CHANNEL_ID` to your private Telegram channel ID (usually starts with `-100`) and add the bot as an administrator with permission to post. For compatibility, a negative channel ID in `LOG_LEVEL` is also treated as the private log channel ID; normal Python logging remains at INFO. Audit notifications are sent only to the configured private log channel.
+
+
+## Channel management
+
+The fixed public-community button is removed from the normal user menu. Add channels from Admin Panel → Manage Channels using the Telegram numeric chat ID. Both public and private Telegram channels are supported, provided the bot is an administrator with invite-user and member-restriction permissions. All configured channels are treated as premium-access channels.
