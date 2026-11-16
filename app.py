@@ -83,12 +83,12 @@ async def user_plans_handler(callback: CallbackQuery):
         ("6 Months", "180 days"),
         ("12 Months", "365 days"),
     ]
-    plan_lines = "\\n".join(f"• <b>{name}</b> — {duration}" for name, duration in plans)
+    plan_lines = "\n".join(f"• <b>{name}</b> — {duration}" for name, duration in plans)
     text = (
-        "💎 <b>Premium Membership Plans</b>\\n\\n"
+        "💎 <b>Premium Membership Plans</b>\n\n"
         "Choose the membership duration that suits you. Premium access unlocks our private channels "
-        "and exclusive member content.\\n\\n"
-        f"{plan_lines}\\n\\n"
+        "and exclusive member content.\n\n"
+        f"{plan_lines}\n\n"
         "💬 Plan pricing will be confirmed by our team. Tap <b>Buy Premium</b> to view payment details."
     )
     await callback.message.edit_text(text, reply_markup=user_back_keyboard())
@@ -99,16 +99,16 @@ async def user_buy_handler(callback: CallbackQuery):
     upi_id = settings.premium_upi_id
     if upi_id:
         text = (
-            "💳 <b>Buy Premium Membership</b>\\n\\n"
-            "1. Open any UPI app (GPay, PhonePe, Paytm, BHIM).\\n"
-            f"2. Pay to this UPI ID: <code>{html.escape(upi_id)}</code>\\n"
-            "3. Keep your payment reference / UTR safe.\\n\\n"
+            "💳 <b>Buy Premium Membership</b>\n\n"
+            "1. Open any UPI app (GPay, PhonePe, Paytm, BHIM).\n"
+            f"2. Pay to this UPI ID: <code>{html.escape(upi_id)}</code>\n"
+            "3. Keep your payment reference / UTR safe.\n\n"
             "⚠️ Membership is activated only after admin verifies your payment. "
             "Payment submission and automatic verification will be added later."
         )
     else:
         text = (
-            "💳 <b>Buy Premium Membership</b>\\n\\n"
+            "💳 <b>Buy Premium Membership</b>\n\n"
             "UPI payment details are being configured. Please check back soon or contact an admin."
         )
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -127,9 +127,9 @@ async def user_public_channel_handler(callback: CallbackQuery):
 
 async def user_membership_info_handler(callback: CallbackQuery):
     await callback.message.edit_text(
-        "✨ <b>Welcome to our Premium Community!</b>\\n\\n"
+        "✨ <b>Welcome to our Premium Community!</b>\n\n"
         "🚀 Get closer to exclusive content, valuable updates and a community built for people "
-        "who want to learn, grow and stay ahead.\\n\\n"
+        "who want to learn, grow and stay ahead.\n\n"
         "💎 Choose a membership plan to unlock private-channel access. "
         "Your access remains active for the plan duration.",
         reply_markup=user_back_keyboard(),
@@ -160,11 +160,11 @@ async def send_audit_notification(event: str, actor: int | None, target: int | N
         when = datetime.now(IST).strftime("%d %b %Y, %I:%M:%S %p IST")
         detail_text = html.escape(str(details))[:1800]
         body = (
-            "🧾 <b>Premium Manager Log</b>\\n"
-            f"<b>Event:</b> <code>{html.escape(event)}</code>\\n"
-            f"<b>Time:</b> {when}\\n"
-            f"<b>Actor:</b> <code>{actor if actor is not None else 'System'}</code>\\n"
-            f"<b>Target:</b> <code>{target if target is not None else '—'}</code>\\n"
+            "🧾 <b>Premium Manager Log</b>\n"
+            f"<b>Event:</b> <code>{html.escape(event)}</code>\n"
+            f"<b>Time:</b> {when}\n"
+            f"<b>Actor:</b> <code>{actor if actor is not None else 'System'}</code>\n"
+            f"<b>Target:</b> <code>{target if target is not None else '—'}</code>\n"
             f"<b>Details:</b> <code>{detail_text or '—'}</code>"
         )
         await bot_instance.send_message(int(channel_id), body)
@@ -197,7 +197,7 @@ async def channels_view():
     keyboard_rows.append([InlineKeyboardButton(text="➕ Add Channel", callback_data="channel:add")])
     keyboard_rows.append([InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")])
     return (
-        "<b>📢 Channel Management</b>\\nAdd premium channels here. Members receive personal join-request links for every active channel.\\n\\n"
+        "<b>📢 Channel Management</b>\nAdd premium channels here. Members receive personal join-request links for every active channel.\n\n"
         f"<b>Configured channels:</b> {len(rows)}",
         InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
@@ -221,8 +221,8 @@ async def admins_view():
     log_id = await db.get_setting("log_channel_id")
     log_summary = f"<code>{log_id}</code>" if log_id else "Not configured"
     return (
-        "<b>🛡 Admin & Logs Management</b>\\nAdmin buttons below let you inspect or remove an admin. Admins can validate premium and manage channels.\\n\\n"
-        f"<b>Assigned admins:</b> {len(rows)}\\n<b>Logs channel:</b> {log_summary}",
+        "<b>🛡 Admin & Logs Management</b>\nAdmin buttons below let you inspect or remove an admin. Admins can validate premium and manage channels.\n\n"
+        f"<b>Assigned admins:</b> {len(rows)}\n<b>Logs channel:</b> {log_summary}",
         InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
 
@@ -370,14 +370,14 @@ async def start_handler(message: Message):
         await audit("ADMIN_AUTHORIZED", actor=user.id, action="start")
     if is_admin(user.id):
         welcome = (
-            "🛠 <b>Welcome, Admin!</b>\\n\\n"
+            "🛠 <b>Welcome, Admin!</b>\n\n"
             "Manage memberships, premium channels, admins and audit logs from your control panel."
         )
     else:
         welcome = (
-            "🌟 <b>Welcome to Our Premium Community!</b> 🌟\\n\\n"
-            "🚀 Be part of a space built for growth, exclusive updates and premium experiences.\\n"
-            "💎 Unlock members-only content, stay connected and get more value from every update.\\n\\n"
+            "🌟 <b>Welcome to Our Premium Community!</b> 🌟\n\n"
+            "🚀 Be part of a space built for growth, exclusive updates and premium experiences.\n"
+            "💎 Unlock members-only content, stay connected and get more value from every update.\n\n"
             "✨ Your next level starts here — explore our community and choose your membership plan below!"
         )
     await message.answer(welcome, reply_markup=main_keyboard(is_admin(user.id)))
