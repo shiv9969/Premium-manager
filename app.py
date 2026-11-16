@@ -216,6 +216,7 @@ async def require_admin(callback: CallbackQuery) -> bool:
 async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = None, expires_at: datetime | None = None) -> int:
     channels = await db.channels()
     sent = []
+    invite_buttons = []
     previous_access = await db.access_for_user(user_id)
     for channel in channels:
         chat_id = channel["chat_id"]
@@ -236,6 +237,9 @@ async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = Non
         )
         await db.save_invite(user_id, chat_id, link.invite_link)
         sent.append(f"• {channel['title']}: {link.invite_link}")
+        invite_buttons.append(
+            [InlineKeyboardButton(text=f"🚀 Join {channel['title'][:40]}", url=link.invite_link)]
+        )
     if sent:
         duration_line = f"\n🎁 Membership duration: <b>{html.escape(duration_label)}</b>" if duration_label else ""
         expiry_line = f"\n📅 Valid until: <b>{fmt_time(expires_at)}</b>" if expires_at else ("\n📅 Validity: <b>Unlimited</b>" if duration_label == "Unlimited" else "")
@@ -246,10 +250,7 @@ async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = Non
             "🚀 Your exclusive channel access is ready. Tap the buttons below to send your join request.\n"
             "✨ Enjoy the premium content, stay active and make the most of your membership!"
         )
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🚀 Join {channel['title'][:40]}", url=link)]
-            for channel, link in zip(channels, [row.split(": ", 1)[1] for row in sent])
-        ])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=invite_buttons)
         await bot.send_message(user_id, text, reply_markup=keyboard)
     else:
         await bot.send_message(
@@ -620,6 +621,7 @@ async def process_warnings(bot: Bot, hours: int):
                 f"⏰ Premium expiry reminder: your membership expires in {hours} hours, "
                 f"at {fmt_time(row['expires_at'])}. Please contact an admin to renew.",
             )
+            await db.mark_warning_sent(row["id"], hours)
             await audit(
                 "WARNING_SENT", target=row["user_id"], hours=hours,
                 membership_id=row["id"], expires_at=row["expires_at"].isoformat(),
