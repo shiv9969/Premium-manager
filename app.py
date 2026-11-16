@@ -487,26 +487,46 @@ async def logs_handler(callback: CallbackQuery):
 async def channels_handler(callback: CallbackQuery):
     if not await require_admin(callback):
         return
-    rows = await db.channels()
-    listing = "\n".join(
-        f"• {r['title']} — <code>{r['chat_id']}</code>" for r in rows
-    ) or "No channels configured."
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Add Channel", callback_data="channel:add")],
-        [InlineKeyboardButton(text="⬅️ Back", callback_data="admin:home")],
-    ])
-    await callback.message.edit_text(
-        "<b>Premium Channels</b>\n" + listing, reply_markup=keyboard
-    )
+    text, keyboard = await channels_view()
+    await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
+
+
+async def show_channel_callback(callback: CallbackQuery):
+    if not await require_admin(callback):
+        return
+    chat_id = int(callback.data.rsplit(":", 1)[1])
+    channel = next((c for c in await db.channels() if int(c["chat_id"]) == chat_id), None)
+    if not channel:
+        await callback.answer("Channel not found.", show_alert=True)
+        return
+    await callback.answer(f"{channel['title']} • ID {chat_id}", show_alert=True)
+
+
+async def remove_channel_callback(callback: CallbackQuery):
+    if not await require_admin(callback):
+        return
+    chat_id = int(callback.data.rsplit(":", 1)[1])
+    channel = next((c for c in await db.channels() if int(c["chat_id"]) == chat_id), None)
+    if not channel:
+        await callback.answer("Channel already removed.", show_alert=True)
+        return
+    await db.remove_channel(chat_id)
+    await audit("CHANNEL_REMOVED", actor=callback.from_user.id, chat_id=chat_id, title=channel["title"])
+    text, keyboard = await channels_view()
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer("Channel removed.")
 
 
 async def begin_channel_add(callback: CallbackQuery, state: FSMContext):
     if not await require_admin(callback):
         return
+    await state.update_data(panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
     await state.set_state(AdminFlow.channel_id)
-    await callback.message.answer(
-        "Send the private channel numeric chat ID (usually starts with -100)."
+    await callback.message.edit_text(
+        "<b>➕ Add Premium Channel</b>\nSend the channel numeric ID (usually starts with -100).\n\n"
+        "First add the bot as channel admin with invite and restrict permissions.\n"
+        "Send /cancel to stop."
     )
     await callback.answer()
 
@@ -528,18 +548,17 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
         ):
             raise ValueError("Bot needs invite-users and restrict-members permissions")
     except Exception as exc:
-        await message.answer(
-            f"Could not add channel: {str(exc)[:250]}\n"
-            "Check the chat ID and bot admin permissions."
+        await edit_saved_panel(
+            message, state,
+            f"<b>Could not add channel</b>\n{html.escape(str(exc)[:250])}\n\n"
+            "Check the ID and bot admin permissions. Send another ID or /cancel."
         )
         return
     await db.add_channel(chat_id, chat.title or str(chat_id), message.from_user.id)
-    await audit(
-        "CHANNEL_ADDED", actor=message.from_user.id,
-        chat_id=chat_id, title=chat.title,
-    )
+    await audit("CHANNEL_ADDED", actor=message.from_user.id, chat_id=chat_id, title=chat.title)
+    text, markup = await channels_view()
+    await edit_saved_panel(message, state, text, markup)
     await state.clear()
-    await message.answer(f"✅ Added channel: {chat.title}")
 
 
 
@@ -548,26 +567,79 @@ async def owner_admins_handler(callback: CallbackQuery):
         await audit("OWNER_UNAUTHORIZED", actor=callback.from_user.id, action="manage_admins")
         await callback.answer("Only the bot owner can manage admins.", show_alert=True)
         return
-    rows = await db.list_admins()
-    lines = [f"• <code>{r['telegram_id']}</code> — {r['role']}" for r in rows]
-    text = "<b>Admin access</b>\n" + ("\n".join(lines) if lines else "No admins assigned.")
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Assign Admin", callback_data="owner:add_admin")],
-        [InlineKeyboardButton(text="➖ Remove Admin", callback_data="owner:remove_admin")],
-        [InlineKeyboardButton(text="⬅️ Back", callback_data="admin:home")],
-    ])
+    text, keyboard = await admins_view()
     await callback.message.edit_text(text, reply_markup=keyboard)
     await callback.answer()
+
+
+async def remove_admin_callback(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("Only the owner can remove admins.", show_alert=True)
+        return
+    target_id = int(callback.data.rsplit(":", 1)[1])
+    if target_id in settings.owner_ids:
+        await callback.answer("Owner access cannot be removed here.", show_alert=True)
+        return
+    removed = await db.remove_admin(target_id)
+    authorized_admin_ids.discard(target_id)
+    await audit("ADMIN_REMOVED", actor=callback.from_user.id, target=target_id, removed=removed)
+    text, keyboard = await admins_view()
+    await callback.message.edit_text(text, reply_markup=keyboard)
+    await callback.answer("Admin removed." if removed else "Admin not found.")
+
+
+async def begin_logs_channel(callback: CallbackQuery, state: FSMContext):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("Only the owner can configure logs.", show_alert=True)
+        return
+    await state.update_data(panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
+    await state.set_state(AdminFlow.log_channel_id)
+    await callback.message.edit_text(
+        "<b>📣 Set Logs Channel</b>\nSend the private channel ID (usually starts with -100).\n\n"
+        "Add this bot as an administrator with permission to post messages. "
+        "Every audit event will be sent there automatically.\n\nSend /cancel to stop."
+    )
+    await callback.answer()
+
+
+async def receive_logs_channel(message: Message, state: FSMContext, bot: Bot):
+    if not is_owner(message.from_user.id):
+        await audit("OWNER_UNAUTHORIZED", actor=message.from_user.id, action="set_logs_channel")
+        return
+    try:
+        channel_id = int(message.text.strip())
+        chat = await bot.get_chat(channel_id)
+        me = await bot.get_me()
+        member = await bot.get_chat_member(channel_id, me.id)
+        if member.status != "administrator" or not getattr(member, "can_post_messages", False):
+            raise ValueError("Bot must be an administrator with permission to post messages.")
+        await bot.send_message(channel_id, "✅ Premium Manager logs are connected. New audit events will appear here.")
+    except Exception as exc:
+        await edit_saved_panel(
+            message, state,
+            f"<b>Could not connect logs channel</b>\n{html.escape(str(exc)[:250])}\n\n"
+            "Check channel ID and bot posting permission, then try again."
+        )
+        return
+    await db.set_setting("log_channel_id", str(channel_id))
+    await audit("LOG_CHANNEL_CONFIGURED", actor=message.from_user.id, channel_id=channel_id, title=chat.title)
+    text, markup = await admins_view()
+    await edit_saved_panel(message, state, text, markup)
+    await state.clear()
 
 
 async def owner_begin_admin_change(callback: CallbackQuery, state: FSMContext):
     if not is_owner(callback.from_user.id):
         await callback.answer("Only the owner can manage admins.", show_alert=True)
         return
-    action = "add" if callback.data == "owner:add_admin" else "remove"
-    await state.update_data(admin_action=action)
+    action = "add"
+    await state.update_data(admin_action=action, panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
     await state.set_state(AdminFlow.admin_id)
-    await callback.message.answer("Send the Telegram numeric ID of the admin to " + action + ".")
+    await callback.message.edit_text(
+        "<b>➕ Add Admin</b>\nSend the Telegram numeric ID of the person to assign as admin.\n\n"
+        "Admins can validate premium and manage channels. Only the owner can manage admins.\n\n"
+        "Send /cancel to stop."
+    )
     await callback.answer()
 
 
@@ -580,28 +652,30 @@ async def owner_receive_admin_id(message: Message, state: FSMContext):
         if target_id <= 0:
             raise ValueError
     except (ValueError, AttributeError):
-        await message.answer("Please send a valid positive Telegram numeric ID.")
+        await edit_saved_panel(message, state, "Please send a valid positive Telegram numeric ID. Try again or send /cancel.")
         return
     data = await state.get_data()
     action = data.get("admin_action")
     if action == "add":
         if target_id in settings.owner_ids:
-            await message.answer("This user is already an owner.")
+            await edit_saved_panel(message, state, "This user is already an owner.")
         else:
             await db.add_admin(target_id, message.from_user.id)
             authorized_admin_ids.add(target_id)
             await audit("ADMIN_ASSIGNED", actor=message.from_user.id, target=target_id)
-            await message.answer(f"✅ Admin access granted to <code>{target_id}</code>.")
+            text, markup = await admins_view()
+            await edit_saved_panel(message, state, text, markup)
     elif action == "remove":
         if target_id in settings.owner_ids:
-            await message.answer("Owner access cannot be removed from the bot. Change OWNER_IDS in deployment settings.")
+            await edit_saved_panel(message, state, "Owner access cannot be removed here.")
         else:
             removed = await db.remove_admin(target_id)
             authorized_admin_ids.discard(target_id)
             await audit("ADMIN_REMOVED", actor=message.from_user.id, target=target_id, removed=removed)
-            await message.answer("✅ Admin access removed." if removed else "That user was not an admin.")
+            text, markup = await admins_view()
+            await edit_saved_panel(message, state, text, markup)
     else:
-        await message.answer("Admin action expired. Open Manage Admins again.")
+        await edit_saved_panel(message, state, "Admin action expired. Open Manage Admins again.")
     await state.clear()
 
 
@@ -614,7 +688,7 @@ async def join_request_handler(request: ChatJoinRequest, bot: Bot):
         and record["user_id"] == request.from_user.id
         and record["status"] == "pending"
         and membership
-        and membership["expires_at"] > datetime.now(timezone.utc)
+        and (membership["expires_at"] is None or membership["expires_at"] > datetime.now(timezone.utc))
     )
     if valid:
         await bot.approve_chat_join_request(request.chat.id, request.from_user.id)
@@ -697,7 +771,8 @@ async def scheduler_tick(bot: Bot):
 
 
 async def on_startup(bot: Bot):
-    global db, scheduler
+    global db, scheduler, bot_instance
+    bot_instance = bot
     db = await Database.connect(settings.database_url)
     await db.bootstrap_owners(settings.owner_ids)
     authorized_admin_ids.clear()
@@ -717,11 +792,12 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    global scheduler
+    global scheduler, bot_instance
     if scheduler:
         scheduler.shutdown(wait=False)
         scheduler = None
     await db.close()
+    bot_instance = None
 
 
 async def main():
@@ -756,10 +832,15 @@ async def main():
     dp.callback_query.register(logs_handler, F.data == "admin:logs")
     dp.callback_query.register(channels_handler, F.data == "admin:channels")
     dp.callback_query.register(begin_channel_add, F.data == "channel:add")
+    dp.callback_query.register(show_channel_callback, F.data.startswith("channel:show:"))
+    dp.callback_query.register(remove_channel_callback, F.data.startswith("channel:remove:"))
+    dp.callback_query.register(remove_admin_callback, F.data.startswith("owner:remove:"))
+    dp.callback_query.register(begin_logs_channel, F.data == "owner:logs_channel")
     dp.message.register(receive_member_id, AdminFlow.member_id)
     dp.message.register(receive_duration, AdminFlow.duration)
     dp.message.register(receive_channel_id, AdminFlow.channel_id)
     dp.message.register(owner_receive_admin_id, AdminFlow.admin_id)
+    dp.message.register(receive_logs_channel, AdminFlow.log_channel_id)
     dp.chat_join_request.register(join_request_handler)
 
     await dp.start_polling(bot)
