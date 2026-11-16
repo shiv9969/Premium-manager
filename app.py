@@ -776,8 +776,12 @@ async def scheduler_tick(bot: Bot):
         await process_warnings(bot, 48)
         await process_warnings(bot, 24)
         await process_expiries(bot)
-    except Exception:
+    except Exception as exc:
         log.exception("SCHEDULER_RECONCILIATION_FAILED")
+        try:
+            await audit("SCHEDULER_ERROR", error=type(exc).__name__, message=str(exc)[:500])
+        except Exception:
+            log.exception("SCHEDULER_ERROR_AUDIT_FAILED")
 
 
 async def on_startup(bot: Bot):
@@ -798,6 +802,7 @@ async def on_startup(bot: Bot):
         "Premium Manager started; timezone=%s configured_admins=%d",
         settings.timezone, len(authorized_admin_ids | settings.owner_ids),
     )
+    await audit("BOT_STARTED", timezone=settings.timezone, admin_count=len(authorized_admin_ids | settings.owner_ids))
     await scheduler_tick(bot)
 
 
