@@ -16,6 +16,8 @@ class Settings:
     owner_ids: set[int]
     timezone: str
     log_level: str
+    public_channel_url: str
+    premium_upi_id: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -30,7 +32,9 @@ class Settings:
             raise RuntimeError("Set at least one OWNER_IDS Telegram numeric ID")
         return cls(token, database_url, owners,
                    os.getenv("TIMEZONE", "Asia/Kolkata"),
-                   os.getenv("LOG_LEVEL", "INFO").upper())
+                   os.getenv("LOG_LEVEL", "INFO").upper(),
+                   os.getenv("PUBLIC_CHANNEL_URL", "").strip(),
+                   os.getenv("PREMIUM_UPI_ID", "").strip())
 
 
 settings = Settings.from_env()
