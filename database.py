@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS memberships (
     user_id BIGINT NOT NULL REFERENCES users(telegram_id),
     starts_at TIMESTAMPTZ NOT NULL,
     expires_at TIMESTAMPTZ,
+    plan_name TEXT NOT NULL DEFAULT 'Legacy / custom',
     status TEXT NOT NULL CHECK (status IN ('active','expired','revoked')),
     validated_by BIGINT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -79,6 +80,7 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(SCHEMA)
             await conn.execute("ALTER TABLE memberships ALTER COLUMN expires_at DROP NOT NULL")
+            await conn.execute("ALTER TABLE memberships ADD COLUMN IF NOT EXISTS plan_name TEXT NOT NULL DEFAULT 'Legacy / custom'")
             await conn.execute("""
                 ALTER TABLE warning_notifications
                 DROP CONSTRAINT IF EXISTS warning_notifications_hours_before_expiry_check
@@ -192,7 +194,7 @@ class Database:
                 return starts, expiry
 
 
-    async def grant_premium(self, user_id: int, duration_seconds: int | None, admin_id: int):
+    async def grant_premium(self, user_id: int, duration_seconds: int | None, admin_id: int, plan_name: str = "Legacy / custom"):
         """Grant or extend membership; None duration means permanent access."""
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -205,16 +207,17 @@ class Database:
                     starts = current["starts_at"]
                     expiry = None if current["expires_at"] is None or duration_seconds is None else current["expires_at"] + timedelta(seconds=duration_seconds)
                     await conn.execute(
-                        """UPDATE memberships SET expires_at=$2, validated_by=$3, updated_at=NOW() WHERE id=$1""",
-                        current["id"], expiry, admin_id
+                        """UPDATE memberships SET expires_at=$2, plan_name=$3, validated_by=$4, updated_at=NOW() WHERE id=$1""",
+                        current["id"], expiry, plan_name, admin_id
                     )
                 else:
                     starts = now
                     expiry = now + timedelta(seconds=duration_seconds) if duration_seconds is not None else None
                     await conn.execute("UPDATE memberships SET status='expired', updated_at=NOW() WHERE user_id=$1 AND status='active'", user_id)
                     await conn.execute(
-                        """INSERT INTO memberships(user_id,starts_at,expires_at,status,validated_by) VALUES($1,$2,$3,'active',$4)""",
-                        user_id, starts, expiry, admin_id
+                        """INSERT INTO memberships(user_id,starts_at,expires_at,plan_name,status,validated_by)
+                           VALUES($1,$2,$3,$4,'active',$5)""",
+                        user_id, starts, expiry, plan_name, admin_id
                     )
                 return starts, expiry
 
@@ -263,6 +266,23 @@ class Database:
                WHERE m.status='active' AND (m.expires_at IS NULL OR m.expires_at>NOW())
                ORDER BY m.expires_at NULLS LAST LIMIT $1""", limit
         )
+
+    async def active_members_by_plan(self):
+        return await self.pool.fetch(
+            """SELECT u.telegram_id,u.username,u.first_name,m.plan_name,m.starts_at,m.expires_at
+               FROM memberships m JOIN users u ON u.telegram_id=m.user_id
+               WHERE m.status='active' AND (m.expires_at IS NULL OR m.expires_at>NOW())
+               ORDER BY m.plan_name, m.expires_at NULLS FIRST, u.telegram_id"""
+        )
+
+    async def revoke_premium(self, user_id: int) -> int:
+        result = await self.pool.execute(
+            """UPDATE memberships SET status='expired',expires_at=NOW(),updated_at=NOW()
+               WHERE user_id=$1 AND status='active'
+                 AND (expires_at IS NULL OR expires_at>NOW())""",
+            user_id,
+        )
+        return int(result.split()[-1])
 
     async def due_memberships(self):
         return await self.pool.fetch(
