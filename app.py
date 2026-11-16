@@ -118,10 +118,9 @@ async def channels_view():
         ])
     keyboard_rows.append([InlineKeyboardButton(text="➕ Add Channel", callback_data="channel:add")])
     keyboard_rows.append([InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")])
-    summary = "\\n".join(f"• {r['title']}" for r in rows) or "No channels added yet."
     return (
         "<b>📢 Channel Management</b>\\nAdd premium channels here. Members receive personal join-request links for every active channel.\\n\\n"
-        f"<b>Configured ({len(rows)}):</b>\\n{summary}",
+        f"<b>Configured channels:</b> {len(rows)}",
         InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
 
@@ -141,12 +140,11 @@ async def admins_view():
         [InlineKeyboardButton(text="📣 Logs Channel", callback_data="owner:logs_channel")],
         [InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")],
     ])
-    summary = "\\n".join(f"• <code>{r['telegram_id']}</code> — {r['role']}" for r in rows) or "No admins assigned."
     log_id = await db.get_setting("log_channel_id")
     log_summary = f"<code>{log_id}</code>" if log_id else "Not configured"
     return (
-        "<b>🛡 Admin & Logs Management</b>\\nAdmins can validate premium and manage channels. Only the owner can add or remove admins.\\n\\n"
-        f"<b>Admins:</b>\\n{summary}\\n\\n<b>Logs channel:</b> {log_summary}",
+        "<b>🛡 Admin & Logs Management</b>\\nAdmin buttons below let you inspect or remove an admin. Admins can validate premium and manage channels.\\n\\n"
+        f"<b>Assigned admins:</b> {len(rows)}\\n<b>Logs channel:</b> {log_summary}",
         InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
     )
 
@@ -572,6 +570,18 @@ async def owner_admins_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+async def owner_admin_info_callback(callback: CallbackQuery):
+    if not is_owner(callback.from_user.id):
+        await callback.answer("Only the owner can view admin details.", show_alert=True)
+        return
+    target_id = int(callback.data.rsplit(":", 1)[1])
+    row = next((r for r in await db.list_admins() if int(r["telegram_id"]) == target_id), None)
+    if not row:
+        await callback.answer("Admin not found.", show_alert=True)
+        return
+    await callback.answer(f"Telegram ID: {target_id} • Role: {row['role']}", show_alert=True)
+
+
 async def remove_admin_callback(callback: CallbackQuery):
     if not is_owner(callback.from_user.id):
         await callback.answer("Only the owner can remove admins.", show_alert=True)
@@ -800,6 +810,11 @@ async def on_shutdown(bot: Bot):
     bot_instance = None
 
 
+async def cancel_flow(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Cancelled. Use the menu buttons to continue.")
+
+
 async def main():
     bot = Bot(
         settings.bot_token,
@@ -811,6 +826,7 @@ async def main():
 
     dp.message.register(start_handler, CommandStart())
     dp.message.register(addpremium_command, Command("addpremium"))
+    dp.message.register(cancel_flow, Command("cancel"))
     dp.message.register(
         lambda m: m.answer("Use /start to open the membership menu."),
         Command("help"),
@@ -835,6 +851,7 @@ async def main():
     dp.callback_query.register(show_channel_callback, F.data.startswith("channel:show:"))
     dp.callback_query.register(remove_channel_callback, F.data.startswith("channel:remove:"))
     dp.callback_query.register(remove_admin_callback, F.data.startswith("owner:remove:"))
+    dp.callback_query.register(owner_admin_info_callback, F.data.startswith("owner:admininfo:"))
     dp.callback_query.register(begin_logs_channel, F.data == "owner:logs_channel")
     dp.message.register(receive_member_id, AdminFlow.member_id)
     dp.message.register(receive_duration, AdminFlow.duration)
