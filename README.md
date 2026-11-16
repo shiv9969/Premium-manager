@@ -41,7 +41,7 @@ Each audit record includes an IST timestamp, actor ID where applicable, target u
 ## Run with Docker
 
 1. Copy .env.example to .env.
-2. Set BOT_TOKEN, OWNER_IDS (the bootstrap owner Telegram ID), DATABASE_URL, PUBLIC_CHANNEL_URL and PREMIUM_UPI_ID. Admins are assigned later from the bot's Owner → Manage Admins panel; no ADMIN_IDS list is needed.
+2. Set BOT_TOKEN, OWNER_IDS (the bootstrap owner Telegram ID), DATABASE_URL, PUBLIC_CHANNEL_URL, PREMIUM_UPI_ID and LOG_CHANNEL_ID. Keep LOG_LEVEL as INFO; for backward compatibility, a negative Telegram channel ID placed in LOG_LEVEL is also detected. Admins are assigned later from the bot's Owner → Manage Admins panel; no ADMIN_IDS list is needed.
 3. Start: docker compose up -d --build
 4. Inspect logs: docker compose logs -f bot
 
@@ -90,3 +90,8 @@ Manual activation only; no payment gateway or web dashboard. Test in private tes
 All users, admin assignments, membership start/expiry timestamps, invite access records, channel configuration and audit logs live in PostgreSQL. Restarting the bot or redeploying it to another host does not reset these timestamps, provided the new deployment connects to the same persistent PostgreSQL database using the same DATABASE_URL. The Docker Compose database volume is persistent on the same host; for a move to another host, migrate/restore the PostgreSQL database and configure the new deployment with that database URL. Do not delete the database volume when redeploying. The reconciliation scheduler runs on startup and every 10 minutes to process overdue reminders and expired access after downtime.
 
 OWNER_IDS is the bootstrap/root owner setting and remains in deployment environment variables for security. It is not duplicated as an ADMIN_IDS list; ordinary admin assignments are stored in the database and managed in the bot.
+
+
+## Test pricing and private logs
+
+The membership menu currently displays demo prices (₹99 / ₹249 / ₹449 / ₹799) and a deliberately invalid placeholder UPI ID. The Buy Premium screen is marked TEST MODE and explicitly tells users not to send money. Replace these only after confirming real prices and a real payment address. Set `LOG_CHANNEL_ID` to your private Telegram channel ID (usually starts with `-100`) and add the bot as an administrator with permission to post. For compatibility, a negative channel ID in `LOG_LEVEL` is also treated as the private log channel ID; normal Python logging remains at INFO. Audit notifications are sent only to the configured private log channel.
