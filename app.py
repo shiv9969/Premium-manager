@@ -38,8 +38,6 @@ bot_instance: Bot | None = None
 
 
 class AdminFlow(StatesGroup):
-    member_id = State()
-    duration = State()
     channel_id = State()
     admin_id = State()
 
@@ -302,10 +300,6 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
         if len(parts) == 2 and parts[0].isdigit():
             target_id = int(parts[0])
             duration_text = parts[1]
-    try:
-        await message.delete()
-    except (TelegramBadRequest, TelegramForbiddenError):
-        pass
     if not target_id or not duration_text:
         await message.answer("Usage: /addpremium USER_ID 1 month\nOr reply to a user message with /addpremium 1 month.\nExamples: 1 minute, 12 hours, 1 month, 365 days, unlimited.")
         return
@@ -527,7 +521,7 @@ async def owner_begin_admin_change(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFlow.admin_id)
     await callback.message.edit_text(
         "<b>➕ Add Admin</b>\nSend the Telegram numeric ID of the person to assign as admin.\n\n"
-        "Admins can validate premium and manage channels. Only the owner can manage admins.\n\n"
+        "Admins can assign premium with /addpremium and manage channels. Only the owner can manage admins.\n\n"
         "Send /cancel to stop."
     )
     await callback.answer()
