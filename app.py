@@ -135,7 +135,6 @@ async def user_membership_info_handler(callback: CallbackQuery):
 
 def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(text="👥 Active Members", callback_data="admin:members")],
         [InlineKeyboardButton(text="📢 Manage Channels", callback_data="admin:channels")],
     ]
     if is_owner:
@@ -144,36 +143,9 @@ def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def send_audit_notification(event: str, actor: int | None, target: int | None, details: dict):
-    if not bot_instance:
-        return
-    try:
-        channel_id = await db.get_setting("log_channel_id")
-        if not channel_id:
-            return
-        when = datetime.now(IST).strftime("%d %b %Y, %I:%M:%S %p IST")
-        detail_text = html.escape(str(details))[:1800]
-        body = (
-            "🧾 <b>Premium Manager Log</b>\n"
-            f"<b>Event:</b> <code>{html.escape(event)}</code>\n"
-            f"<b>Time:</b> {when}\n"
-            f"<b>Actor:</b> <code>{actor if actor is not None else 'System'}</code>\n"
-            f"<b>Target:</b> <code>{target if target is not None else '—'}</code>\n"
-            f"<b>Details:</b> <code>{detail_text or '—'}</code>"
-        )
-        await bot_instance.send_message(int(channel_id), body)
-    except Exception:
-        log.exception("AUDIT_CHANNEL_DELIVERY_FAILED event=%s", event)
-
-
 async def audit(event: str, actor: int | None = None, target: int | None = None, **details):
-    try:
-        await db.audit(event, actor, target, details)
-    except Exception:
-        log.exception("AUDIT_PERSIST_FAILED event=%s actor=%s target=%s", event, actor, target)
-        raise
-    log.info("AUDIT event=%s actor_id=%s target_user_id=%s details=%s",
-             event, actor, target, details)
+    # Audit logging disabled as requested.
+    return
 
 
 async def channels_view():
@@ -330,6 +302,10 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
         if len(parts) == 2 and parts[0].isdigit():
             target_id = int(parts[0])
             duration_text = parts[1]
+    try:
+        await message.delete()
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
     if not target_id or not duration_text:
         await message.answer("Usage: /addpremium USER_ID 1 month\nOr reply to a user message with /addpremium 1 month.\nExamples: 1 minute, 12 hours, 1 month, 365 days, unlimited.")
         return
@@ -424,137 +400,6 @@ async def begin_add(callback: CallbackQuery, state: FSMContext):
     if not await require_admin(callback):
         return
     await callback.answer("Use /addpremium USER_ID 1 month")
-
-
-async def receive_member_id(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await audit("ADMIN_UNAUTHORIZED", actor=message.from_user.id, action="member_id_input")
-        return
-    await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="member_id_input")
-    try:
-        target_id = int(message.text.strip())
-        if target_id <= 0:
-            raise ValueError
-    except (ValueError, AttributeError):
-        await message.answer("Please send a valid positive Telegram numeric ID.")
-        return
-    user = await db.get_user(target_id)
-    if not user:
-        await message.answer("This user has not started the bot yet. Ask them to send /start first.")
-        return
-    await state.update_data(target_id=target_id)
-    await state.set_state(AdminFlow.duration)
-    await message.answer("Enter premium validity in days (1–3650).")
-
-
-async def receive_duration(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        await audit("ADMIN_UNAUTHORIZED", actor=message.from_user.id, action="duration_input")
-        return
-    await audit("ADMIN_AUTHORIZED", actor=message.from_user.id, action="duration_input")
-    try:
-        days = int(message.text.strip())
-        if not 1 <= days <= 3650:
-            raise ValueError
-    except (ValueError, AttributeError):
-        await message.answer("Enter a whole number from 1 to 3650.")
-        return
-    data = await state.get_data()
-    target_id = data["target_id"]
-    await state.update_data(days=days)
-    active = await db.get_membership(target_id)
-    buttons = [
-        [InlineKeyboardButton(text="✅ Confirm — Extend", callback_data="validate:extend")],
-        [InlineKeyboardButton(text="🔄 Confirm — Reset from now", callback_data="validate:reset")],
-        [InlineKeyboardButton(text="Cancel", callback_data="validate:cancel")],
-    ] if active and (active["expires_at"] is None or active["expires_at"] > datetime.now(timezone.utc)) else [
-        [InlineKeyboardButton(text="✅ Confirm Activation", callback_data="validate:reset")],
-        [InlineKeyboardButton(text="Cancel", callback_data="validate:cancel")],
-    ]
-    await message.answer(
-        f"Confirm premium validation?\n\nUser: <code>{target_id}</code>\n"
-        f"Duration: <b>{days} days</b>\n"
-        f"Current expiry: {(fmt_time(active['expires_at']) if active['expires_at'] else 'Unlimited') if active else 'Not active'}",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-    )
-
-
-async def validate_callback(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    if not await require_admin(callback):
-        return
-    if callback.data == "validate:cancel":
-        await state.clear()
-        await callback.message.edit_text("Validation cancelled.")
-        await callback.answer()
-        return
-    data = await state.get_data()
-    if not data.get("target_id") or not data.get("days"):
-        await callback.answer("Validation session expired. Start again.", show_alert=True)
-        return
-    target_id, days = int(data["target_id"]), int(data["days"])
-    reset = callback.data.endswith("reset")
-    starts, expiry = await db.activate(target_id, days, callback.from_user.id, reset)
-    await audit(
-        "USER_VALIDATED", actor=callback.from_user.id, target=target_id,
-        duration_days=days, renewal_mode="reset" if reset else "extend",
-        starts_at=starts.isoformat(), expires_at=expiry.isoformat() if expiry else None,
-    )
-    await state.clear()
-    try:
-        invite_count = await issue_invites(bot, target_id)
-    except (TelegramForbiddenError, TelegramBadRequest) as exc:
-        await audit(
-            "ACCESS_DELIVERY_FAILED", actor=callback.from_user.id, target=target_id,
-            error=type(exc).__name__, message=str(exc)[:300],
-        )
-        await callback.message.edit_text(
-            f"✅ Membership saved until {fmt_time(expiry) if expiry else 'Unlimited'}, but access delivery failed. "
-            "Check bot permissions and whether the user has started the bot."
-        )
-        await callback.answer("Saved; access delivery needs attention.", show_alert=True)
-        return
-    await callback.message.edit_text(
-        f"✅ User <code>{target_id}</code> validated.\n"
-        f"Duration: {days} days\nExpiry: {fmt_time(expiry) if expiry else 'Unlimited'}\n"
-        f"Channel links created: {invite_count}"
-    )
-    await callback.answer("Membership activated.")
-
-
-async def members_handler(callback: CallbackQuery):
-    if not await require_admin(callback):
-        return
-    rows = await db.active_members()
-    if not rows:
-        text = "No active members found."
-    else:
-        lines = [
-            f"• <code>{r['telegram_id']}</code> — {fmt_time(r['expires_at']) if r['expires_at'] else 'Unlimited'}"
-            for r in rows
-        ]
-        text = "<b>Active members</b>\n" + "\n".join(lines)
-    await callback.message.edit_text(text, reply_markup=admin_keyboard(is_owner(callback.from_user.id)))
-    await callback.answer()
-
-
-async def logs_handler(callback: CallbackQuery):
-    if not await require_admin(callback):
-        return
-    rows = await db.latest_logs(15)
-    if not rows:
-        text = "No audit events recorded yet."
-    else:
-        lines = []
-        for row in rows:
-            when = fmt_time(row["created_at"])
-            details = str(row["details"])[:110]
-            lines.append(
-                f"• <b>{row['event']}</b> — {when}\n"
-                f"  actor={row['actor_id']} target={row['target_id']} {details}"
-            )
-        text = "<b>Recent audit logs</b>\n\n" + "\n\n".join(lines)
-    await callback.message.edit_text(text[:4000], reply_markup=admin_keyboard(is_owner(callback.from_user.id)))
-    await callback.answer()
 
 
 async def channels_handler(callback: CallbackQuery):
@@ -673,46 +518,6 @@ async def remove_admin_callback(callback: CallbackQuery):
     await callback.answer("Admin removed." if removed else "Admin not found.")
 
 
-async def begin_logs_channel(callback: CallbackQuery, state: FSMContext):
-    if not is_owner(callback.from_user.id):
-        await callback.answer("Only the owner can configure logs.", show_alert=True)
-        return
-    await state.update_data(panel_chat_id=callback.message.chat.id, panel_message_id=callback.message.message_id)
-    await state.set_state(AdminFlow.log_channel_id)
-    await callback.message.edit_text(
-        "<b>📣 Set Logs Channel</b>\nSend the private channel ID (usually starts with -100).\n\n"
-        "Add this bot as an administrator with permission to post messages. "
-        "Every audit event will be sent there automatically.\n\nSend /cancel to stop."
-    )
-    await callback.answer()
-
-
-async def receive_logs_channel(message: Message, state: FSMContext, bot: Bot):
-    if not is_owner(message.from_user.id):
-        await audit("OWNER_UNAUTHORIZED", actor=message.from_user.id, action="set_logs_channel")
-        return
-    try:
-        channel_id = int(message.text.strip())
-        chat = await bot.get_chat(channel_id)
-        me = await bot.get_me()
-        member = await bot.get_chat_member(channel_id, me.id)
-        if member.status != "administrator" or not getattr(member, "can_post_messages", False):
-            raise ValueError("Bot must be an administrator with permission to post messages.")
-        await bot.send_message(channel_id, "✅ Premium Manager logs are connected. New audit events will appear here.")
-    except Exception as exc:
-        await edit_saved_panel(
-            message, state,
-            f"<b>Could not connect logs channel</b>\n{html.escape(str(exc)[:250])}\n\n"
-            "Check channel ID and bot posting permission, then try again."
-        )
-        return
-    await db.set_setting("log_channel_id", str(channel_id))
-    await audit("LOG_CHANNEL_CONFIGURED", actor=message.from_user.id, channel_id=channel_id, title=chat.title)
-    text, markup = await admins_view()
-    await edit_saved_panel(message, state, text, markup)
-    await state.clear()
-
-
 async def owner_begin_admin_change(callback: CallbackQuery, state: FSMContext):
     if not is_owner(callback.from_user.id):
         await callback.answer("Only the owner can manage admins.", show_alert=True)
@@ -739,6 +544,10 @@ async def owner_receive_admin_id(message: Message, state: FSMContext):
     except (ValueError, AttributeError):
         await edit_saved_panel(message, state, "Please send a valid positive Telegram numeric ID. Try again or send /cancel.")
         return
+    try:
+        await message.delete()
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
     data = await state.get_data()
     action = data.get("admin_action")
     if action == "add":
@@ -855,8 +664,8 @@ async def process_expiries(bot: Bot):
                 ]) if settings.owner_ids else None
                 await bot.send_message(
                     user_id,
-                    "⛔ <b>Premium is over!</b> You have been removed from all premium channels.\\n\\n"
-                    "To get premium again, please contact our admin.",
+                    "⛔ <b>Premium over!</b> You have been removed from all premium channels.\n\n"
+                    "Firse premium chahiye toh Contact Admin button par tap karke admin se baat karein.",
                     reply_markup=keyboard,
                 )
             except (TelegramForbiddenError, TelegramBadRequest):
@@ -913,7 +722,7 @@ async def cancel_flow(message: Message, state: FSMContext):
     if current == AdminFlow.channel_id.state:
         text, markup = await channels_view()
         await edit_saved_panel(message, state, text, markup)
-    elif current in {AdminFlow.admin_id.state, AdminFlow.log_channel_id.state}:
+    elif current == AdminFlow.admin_id.state:
         text, markup = await admins_view()
         await edit_saved_panel(message, state, text, markup)
     else:
@@ -952,7 +761,6 @@ async def main():
         ),
         F.data == "menu:home",
     )
-    dp.callback_query.register(members_handler, F.data == "admin:members")
     dp.callback_query.register(channels_handler, F.data == "admin:channels")
     dp.callback_query.register(begin_channel_add, F.data == "channel:add")
     dp.callback_query.register(show_channel_callback, F.data.startswith("channel:show:"))
