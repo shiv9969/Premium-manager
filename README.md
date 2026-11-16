@@ -8,10 +8,11 @@ Telegram premium-membership manager using Python, Aiogram 3, PostgreSQL and APSc
 - Owner-managed admins from inside the bot; admin assignments are stored in PostgreSQL.
 - Inline admin panel.
 - Manual premium validation with custom duration from 1 minute to unlimited.
-- Admin `/addpremium` command with minute/hour/day/week/month/year or unlimited duration.
+- Admin `/addpremium` and `/removepremium` commands.
+- Premium Members dashboard grouped by plan, with member IDs and remaining time.
 - Multiple channel registration and permission checks.
 - Per-member join-request invite links and identity verification.
-- 48-hour and 24-hour expiry warnings.
+- 48-hour, 24-hour and 12-hour expiry warnings with a Renew Now / Contact Admin button.
 - Expiry reconciliation after restarts.
 - Removal from all configured channels on expiry.
 - Renewal with extend or reset semantics.
@@ -19,11 +20,11 @@ Telegram premium-membership manager using Python, Aiogram 3, PostgreSQL and APSc
 
 ## Audit events
 
-The audit_logs table and application logger record:
+The application logger records operational errors; in-chat audit notifications are currently disabled. The audit_logs table remains for legacy data. Earlier listed audit events are not actively written while audit logging is disabled. The application logger records:
 - NEW_USER: first-time user registration.
 - ADMIN_AUTHORIZED: authorized admin accessed an admin workflow.
 - USER_VALIDATED: admin activated a member, including duration and expiry.
-- WARNING_SENT / WARNING_FAILED: 48h and 24h warning delivery results.
+- WARNING_SENT / WARNING_FAILED: 48h, 24h and 12h warning delivery results.
 - MEMBER_EXPIRED: membership expiry processed.
 - MEMBER_REMOVED: per-channel removal result.
 - ADMIN_UNAUTHORIZED: unauthorized user attempted an admin action.
@@ -57,12 +58,13 @@ Install requirements.txt, start PostgreSQL, set environment variables, then run 
 - Timed access has a minimum of 1 minute. Unlimited memberships have no expiry and are not removed by the expiry scheduler.
 - Confirm the displayed activation and expiry details.
 - Use Manage Channels to register private channel IDs.
-- Use Members to inspect status and renew/revoke subscriptions.
+- Open Premium Members in the admin panel to inspect active members grouped by plan, including Telegram ID and remaining time.
+- Use `/removepremium USER_ID` to revoke access, or reply to a user's message with `/removepremium`. The bot then removes them from managed premium channels; failed removals are retried.
 - Use Audit Logs to inspect recent security and membership events.
 
 ## Premium duration command
 
-`/addpremium USER_ID DURATION` grants or extends premium immediately. Alternatively, reply to a user message with `/addpremium DURATION`. The user must have started the bot before it can receive a private message. Timed durations accept minute, hour, day, week, month (30 days), and year (365 days). Use `unlimited` for permanent access.
+`/addpremium USER_ID DURATION` grants or extends premium immediately. `/removepremium USER_ID` revokes premium and starts channel removal. Alternatively, reply to a user message with `/addpremium DURATION`. The user must have started the bot before it can receive a private message. Timed durations accept minute, hour, day, week, month (30 days), and year (365 days). Use `unlimited` for permanent access.
 
 ## Important Telegram behavior
 
