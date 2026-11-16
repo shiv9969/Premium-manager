@@ -55,17 +55,12 @@ def main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")]
         ])
     rows = [
-        [InlineKeyboardButton(text="📢 Join Our Community", callback_data="user:public_channel")],
         [InlineKeyboardButton(text="ℹ️ Membership Info", callback_data="user:membership_info")],
         [InlineKeyboardButton(text="💎 Membership Plans", callback_data="user:plans")],
         [InlineKeyboardButton(text="👑 My Membership", callback_data="user:status")],
         [InlineKeyboardButton(text="💳 Buy Premium", callback_data="user:buy")],
         [InlineKeyboardButton(text="🔗 My Premium Channel Links", callback_data="user:links")],
     ]
-    if settings.public_channel_url.startswith(("https://t.me/", "https://telegram.me/")):
-        rows[0][0] = InlineKeyboardButton(
-            text="📢 Join Our Community", url=settings.public_channel_url
-        )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
