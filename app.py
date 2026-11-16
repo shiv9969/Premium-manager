@@ -139,6 +139,7 @@ async def user_membership_info_handler(callback: CallbackQuery):
 
 def admin_keyboard(is_owner: bool = False) -> InlineKeyboardMarkup:
     rows = [
+        [InlineKeyboardButton(text="👥 Premium Members", callback_data="members:home")],
         [InlineKeyboardButton(text="📢 Manage Channels", callback_data="admin:channels")],
     ]
     if is_owner:
@@ -332,7 +333,13 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
     except ValueError as exc:
         await message.answer(str(exc))
         return
-    starts, expiry = await db.grant_premium(target_id, seconds, admin_id)
+    plan_name = "Unlimited" if seconds is None else {
+        30 * 86400: "1 Month",
+        90 * 86400: "3 Months",
+        180 * 86400: "6 Months",
+        365 * 86400: "12 Months",
+    }.get(seconds, duration_label)
+    starts, expiry = await db.grant_premium(target_id, seconds, admin_id, plan_name)
     await audit("PREMIUM_ADDED_COMMAND", actor=admin_id, target=target_id, duration=duration_label, duration_seconds=seconds, starts_at=starts.isoformat(), expires_at=expiry.isoformat() if expiry else None, unlimited=expiry is None)
     try:
         links = await issue_invites(bot, target_id, duration_label, expiry)
@@ -342,6 +349,42 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
         delivery = "Premium saved, but channel links could not be delivered; check bot permissions."
     expiry_text = fmt_time(expiry) if expiry else "Unlimited"
     await message.answer(f"Premium added for {target_id}.\nDuration: {duration_label}\nExpiry: {expiry_text}\n{delivery}")
+
+async def removepremium_command(message: Message, command: CommandObject, bot: Bot):
+    admin_id = message.from_user.id
+    if not is_admin(admin_id):
+        await message.answer("You are not authorized to use this command.")
+        return
+    args = (command.args or "").strip()
+    target_id = None
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+    elif args.isdigit():
+        target_id = int(args)
+    try:
+        await message.delete()
+    except (TelegramBadRequest, TelegramForbiddenError):
+        pass
+    if not target_id:
+        await message.answer(
+            "Usage: /removepremium USER_ID\n"
+            "Or reply to a user's message with /removepremium."
+        )
+        return
+    removed = await db.revoke_premium(target_id)
+    if not removed:
+        await message.answer(f"User {target_id} does not have an active premium membership.")
+        return
+    await audit("PREMIUM_REVOKED", actor=admin_id, target=target_id)
+    try:
+        await process_expiries(bot)
+    except Exception:
+        log.exception("Could not complete immediate channel removal for user_id=%s", target_id)
+    await message.answer(
+        f"Premium revoked for <code>{target_id}</code>. "
+        "The bot will remove the user from all managed premium channels; failed removals are retried."
+    )
+
 
 async def start_handler(message: Message):
     user = message.from_user
@@ -414,6 +457,100 @@ async def menu_home_handler(callback: CallbackQuery):
         reply_markup=main_keyboard(
             is_admin(callback.from_user.id), has_active_membership(membership)
         ),
+    )
+    await callback.answer()
+
+
+def remaining_membership(expires_at):
+    if expires_at is None:
+        return "Unlimited"
+    seconds = max(0, int((expires_at - datetime.now(timezone.utc)).total_seconds()))
+    days, remainder = divmod(seconds, 86400)
+    hours = remainder // 3600
+    if days:
+        return f"{days}d {hours}h"
+    return f"{hours}h"
+
+
+async def premium_members_handler(callback: CallbackQuery):
+    if not await require_admin(callback):
+        return
+    rows = await db.active_members_by_plan()
+    if not rows:
+        await callback.message.edit_text(
+            "👥 <b>Premium Members</b>\n\nNo active premium members right now.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")]
+            ]),
+        )
+        await callback.answer()
+        return
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["plan_name"] or "Legacy / custom", 0)
+        groups[row["plan_name"] or "Legacy / custom"] += 1
+    lines = ["👥 <b>Premium Members</b>", "", f"Total active members: <b>{len(rows)}</b>", "", "<b>Plans:</b>"]
+    buttons = []
+    for plan, count in groups.items():
+        lines.append(f"• {html.escape(plan)}: <b>{count}</b>")
+        buttons.append([InlineKeyboardButton(
+            text=f"📋 {plan[:35]} ({count})",
+            callback_data=f"members:plan:{plan}:0",
+        )])
+    buttons.append([InlineKeyboardButton(text="⬅️ Admin Panel", callback_data="admin:home")])
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
+    )
+    await callback.answer()
+
+
+async def premium_members_plan_handler(callback: CallbackQuery):
+    if not await require_admin(callback):
+        return
+    payload = callback.data[len("members:plan:"):]
+    try:
+        plan, offset_text = payload.rsplit(":", 1)
+        offset = max(0, int(offset_text))
+    except (ValueError, TypeError):
+        await callback.answer("Invalid member list page.", show_alert=True)
+        return
+    rows = [r for r in await db.active_members_by_plan()
+            if (r["plan_name"] or "Legacy / custom") == plan]
+    page_size = 15
+    page = rows[offset:offset + page_size]
+    if not page and offset:
+        await callback.answer("No more members on this page.", show_alert=True)
+        return
+    lines = [
+        f"👥 <b>{html.escape(plan)}</b>",
+        f"Active members: <b>{len(rows)}</b>",
+        "",
+    ]
+    for index, row in enumerate(page, start=offset + 1):
+        display = f"@{row['username']}" if row["username"] else (row["first_name"] or "User")
+        lines.append(
+            f"<b>{index}.</b> {html.escape(display)}"
+            f"\n   ID: <code>{row['telegram_id']}</code>"
+            f"\n   Remaining: <b>{remaining_membership(row['expires_at'])}</b>"
+        )
+    buttons = []
+    nav = []
+    if offset > 0:
+        nav.append(InlineKeyboardButton(
+            text="⬅️ Previous", callback_data=f"members:plan:{plan}:{max(0, offset-page_size)}"
+        ))
+    if offset + page_size < len(rows):
+        nav.append(InlineKeyboardButton(
+            text="Next ➡️", callback_data=f"members:plan:{plan}:{offset+page_size}"
+        ))
+    if nav:
+        buttons.append(nav)
+    buttons.extend([
+        [InlineKeyboardButton(text="⬅️ Plans", callback_data="members:home")],
+        [InlineKeyboardButton(text="🛠 Admin Panel", callback_data="admin:home")],
+    ])
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
     await callback.answer()
 
@@ -796,12 +933,15 @@ async def main():
 
     dp.message.register(start_handler, CommandStart())
     dp.message.register(addpremium_command, Command("addpremium"))
+    dp.message.register(removepremium_command, Command("removepremium"))
     dp.message.register(cancel_flow, Command("cancel"))
     dp.message.register(
         lambda m: m.answer("Use /start to open the membership menu."),
         Command("help"),
     )
     dp.callback_query.register(admin_home, F.data == "admin:home")
+    dp.callback_query.register(premium_members_handler, F.data == "members:home")
+    dp.callback_query.register(premium_members_plan_handler, F.data.startswith("members:plan:"))
     dp.callback_query.register(owner_admins_handler, F.data == "owner:admins")
     dp.callback_query.register(owner_begin_admin_change, F.data == "owner:add_admin")
     dp.callback_query.register(status_handler, F.data == "user:status")
