@@ -213,7 +213,7 @@ async def require_admin(callback: CallbackQuery) -> bool:
     return True
 
 
-async def issue_invites(bot: Bot, user_id: int) -> int:
+async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = None, expires_at: datetime | None = None) -> int:
     channels = await db.channels()
     sent = []
     previous_access = await db.access_for_user(user_id)
@@ -237,15 +237,26 @@ async def issue_invites(bot: Bot, user_id: int) -> int:
         await db.save_invite(user_id, chat_id, link.invite_link)
         sent.append(f"• {channel['title']}: {link.invite_link}")
     if sent:
-        await bot.send_message(
-            user_id,
-            "✅ Premium access is ready. Request to join using your personal links:\n\n"
-            + "\n".join(sent),
+        duration_line = f"\n🎁 Membership duration: <b>{html.escape(duration_label)}</b>" if duration_label else ""
+        expiry_line = f"\n📅 Valid until: <b>{fmt_time(expires_at)}</b>" if expires_at else ("\n📅 Validity: <b>Unlimited</b>" if duration_label == "Unlimited" else "")
+        text = (
+            "🎉 <b>CONGRATULATIONS! PREMIUM ACTIVATED!</b> 🎉\n\n"
+            "💎 Welcome to the Premium family! Your membership is now active."
+            f"{duration_line}{expiry_line}\n\n"
+            "🚀 Your exclusive channel access is ready. Tap the buttons below to send your join request.\n"
+            "✨ Enjoy the premium content, stay active and make the most of your membership!"
         )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🚀 Join {channel['title'][:40]}", url=link)]
+            for channel, link in zip(channels, [row.split(": ", 1)[1] for row in sent])
+        ])
+        await bot.send_message(user_id, text, reply_markup=keyboard)
     else:
         await bot.send_message(
             user_id,
-            "✅ Premium activated. No premium channels are configured yet; please contact an admin.",
+            "🎉 <b>CONGRATULATIONS! PREMIUM ACTIVATED!</b> 🎉\n\n"
+            "💎 Your premium membership is active, but no channels are configured yet. "
+            "Please contact an admin to get your channel access.",
         )
     return len(sent)
 
@@ -314,7 +325,7 @@ async def addpremium_command(message: Message, command: CommandObject, bot: Bot)
     starts, expiry = await db.grant_premium(target_id, seconds, admin_id)
     await audit("PREMIUM_ADDED_COMMAND", actor=admin_id, target=target_id, duration=duration_label, duration_seconds=seconds, starts_at=starts.isoformat(), expires_at=expiry.isoformat() if expiry else None, unlimited=expiry is None)
     try:
-        links = await issue_invites(bot, target_id)
+        links = await issue_invites(bot, target_id, duration_label, expiry)
         delivery = f"Channel links created: {links}"
     except (TelegramForbiddenError, TelegramBadRequest) as exc:
         await audit("ACCESS_DELIVERY_FAILED", actor=admin_id, target=target_id, error=type(exc).__name__, message=str(exc)[:250])
@@ -328,7 +339,6 @@ async def start_handler(message: Message):
     if is_new:
         await audit("NEW_USER", actor=user.id, target=user.id,
                     username=user.username, first_name=user.first_name)
-    if is_admin(user.id):
     if is_admin(user.id):
         welcome = (
             "🛠 <b>Welcome, Admin!</b>\n\n"
