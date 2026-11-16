@@ -687,6 +687,7 @@ async def scheduler_tick(bot: Bot):
     try:
         await process_warnings(bot, 48)
         await process_warnings(bot, 24)
+        await process_warnings(bot, 12)
         await process_expiries(bot)
     except Exception as exc:
         log.exception("SCHEDULER_RECONCILIATION_FAILED")
