@@ -220,6 +220,9 @@ async def require_admin(callback: CallbackQuery) -> bool:
 
 
 async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = None, expires_at: datetime | None = None) -> int:
+    membership = await db.get_membership(user_id)
+    if not has_active_membership(membership):
+        raise ValueError("Cannot create premium channel invites for a user without active membership.")
     channels = await db.channels()
     sent = []
     invite_buttons = []
