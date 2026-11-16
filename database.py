@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS audit_logs_created_idx ON audit_logs(created_at DESC);
 CREATE TABLE IF NOT EXISTS warning_notifications (
     membership_id BIGINT NOT NULL REFERENCES memberships(id) ON DELETE CASCADE,
-    hours_before_expiry INTEGER NOT NULL CHECK (hours_before_expiry IN (24,48)),
+    hours_before_expiry INTEGER NOT NULL CHECK (hours_before_expiry IN (12,24,48)),
     sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY(membership_id, hours_before_expiry)
 );
@@ -79,6 +79,15 @@ class Database:
         async with pool.acquire() as conn:
             await conn.execute(SCHEMA)
             await conn.execute("ALTER TABLE memberships ALTER COLUMN expires_at DROP NOT NULL")
+            await conn.execute("""
+                ALTER TABLE warning_notifications
+                DROP CONSTRAINT IF EXISTS warning_notifications_hours_before_expiry_check
+            """)
+            await conn.execute("""
+                ALTER TABLE warning_notifications
+                ADD CONSTRAINT warning_notifications_hours_before_expiry_check
+                CHECK (hours_before_expiry IN (12,24,48))
+            """)
         return db
 
     async def close(self) -> None:
