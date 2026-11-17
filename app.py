@@ -600,7 +600,6 @@ async def premium_member_remove_handler(callback: CallbackQuery, bot: Bot):
         await process_expiries(bot)
     except Exception:
         log.exception("Immediate channel removal failed for premium user_id=%s", target_id)
-    await callback.answer("Premium revoked. Channel removal started.", show_alert=True)
     await premium_members_handler(callback)
 
 
