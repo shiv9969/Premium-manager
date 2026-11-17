@@ -220,6 +220,32 @@ async def require_admin(callback: CallbackQuery) -> bool:
     return True
 
 
+async def send_new_channel_access(bot: Bot, user_id: int, channel) -> bool:
+    """Create a personal join-request link for one newly added channel."""
+    membership = await db.get_membership(user_id)
+    if not has_active_membership(membership):
+        return False
+    link = await bot.create_chat_invite_link(
+        chat_id=channel["chat_id"],
+        creates_join_request=True,
+        name=f"premium-{user_id}",
+    )
+    await db.save_invite(user_id, channel["chat_id"], link.invite_link)
+    await bot.send_message(
+        user_id,
+        "🎉 <b>New Premium Channel Added!</b>\n\n"
+        f"📢 <b>{html.escape(channel['title'])}</b>\n"
+        "Your premium membership is active. Tap below to request access.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🚀 Join {channel['title'][:40]}",
+                url=link.invite_link,
+            )]
+        ]),
+    )
+    return True
+
+
 async def issue_invites(bot: Bot, user_id: int, duration_label: str | None = None, expires_at: datetime | None = None) -> int:
     membership = await db.get_membership(user_id)
     if not has_active_membership(membership):
@@ -533,7 +559,10 @@ async def premium_members_plan_handler(callback: CallbackQuery):
             f"\n   ID: <code>{row['telegram_id']}</code>"
             f"\n   Remaining: <b>{remaining_membership(row['expires_at'])}</b>"
         )
-    buttons = []
+        buttons.append([InlineKeyboardButton(
+            text=f"❌ Remove {row['telegram_id']}",
+            callback_data=f"members:remove:{row['telegram_id']}",
+        )])
     nav = []
     if offset > 0:
         nav.append(InlineKeyboardButton(
@@ -553,6 +582,26 @@ async def premium_members_plan_handler(callback: CallbackQuery):
         "\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)
     )
     await callback.answer()
+
+
+async def premium_member_remove_handler(callback: CallbackQuery, bot: Bot):
+    if not await require_admin(callback):
+        return
+    try:
+        target_id = int(callback.data.rsplit(":", 1)[1])
+    except ValueError:
+        await callback.answer("Invalid member ID.", show_alert=True)
+        return
+    removed = await db.revoke_premium(target_id)
+    if not removed:
+        await callback.answer("This user has no active premium membership.", show_alert=True)
+        return
+    try:
+        await process_expiries(bot)
+    except Exception:
+        log.exception("Immediate channel removal failed for premium user_id=%s", target_id)
+    await callback.answer("Premium revoked. Channel removal started.", show_alert=True)
+    await premium_members_handler(callback)
 
 
 async def admin_home(callback: CallbackQuery):
@@ -646,7 +695,34 @@ async def receive_channel_id(message: Message, state: FSMContext, bot: Bot):
         return
     await db.add_channel(chat_id, chat.title or str(chat_id), message.from_user.id)
     await audit("CHANNEL_ADDED", actor=message.from_user.id, chat_id=chat_id, title=chat.title)
+
+    # Newly added channels must also reach users whose premium is already active.
+    added_channel = {"chat_id": chat_id, "title": chat.title or str(chat_id)}
+    active_members = await db.active_members_by_plan()
+    delivered = 0
+    failed = 0
+    for premium_member in active_members:
+        try:
+            if await send_new_channel_access(bot, int(premium_member["telegram_id"]), added_channel):
+                delivered += 1
+        except (TelegramBadRequest, TelegramForbiddenError):
+            failed += 1
+            log.warning(
+                "Could not deliver newly added channel to premium user_id=%s chat_id=%s",
+                premium_member["telegram_id"], chat_id,
+            )
+        except Exception:
+            failed += 1
+            log.exception(
+                "Unexpected error delivering new channel to user_id=%s chat_id=%s",
+                premium_member["telegram_id"], chat_id,
+            )
+
     text, markup = await channels_view()
+    text += (
+        f"\n\nNew channel access sent to <b>{delivered}</b> active premium member(s)."
+        + (f"\nCould not deliver to <b>{failed}</b> member(s); they can retry from My Premium Channel Links." if failed else "")
+    )
     await edit_saved_panel(message, state, text, markup)
     await state.clear()
 
@@ -942,6 +1018,7 @@ async def main():
     dp.callback_query.register(admin_home, F.data == "admin:home")
     dp.callback_query.register(premium_members_handler, F.data == "members:home")
     dp.callback_query.register(premium_members_plan_handler, F.data.startswith("members:plan:"))
+    dp.callback_query.register(premium_member_remove_handler, F.data.startswith("members:remove:"))
     dp.callback_query.register(owner_admins_handler, F.data == "owner:admins")
     dp.callback_query.register(owner_begin_admin_change, F.data == "owner:add_admin")
     dp.callback_query.register(status_handler, F.data == "user:status")
